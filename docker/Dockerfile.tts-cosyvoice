@@ -1,0 +1,48 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    ffmpeg \
+    git \
+    git-lfs \
+    libsndfile1 \
+    libsox-dev \
+    python3 \
+    python3-pip \
+    python-is-python3 \
+    sox \
+    wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && git lfs install
+
+RUN wget --quiet https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda \
+    && rm /tmp/miniforge.sh
+
+ENV PATH=/opt/conda/envs/cosyvoice/bin:/opt/conda/bin:$PATH
+ENV PYTORCH_CU121_WHEEL_BASE=https://download.pytorch.org/whl/cu121
+
+RUN conda create -y -n cosyvoice python=3.10 \
+    && conda install -y -n cosyvoice -c conda-forge pynini==2.1.5 \
+    && conda clean -afy
+
+COPY docker/requirements.tts-cosyvoice.inference.txt /tmp/cosyvoice-requirements.txt
+
+# Install only the packages needed for local CosyVoice inference.
+RUN python -m pip install --upgrade pip "setuptools<81" wheel \
+    && python -m pip install \
+        "${PYTORCH_CU121_WHEEL_BASE}/torch-2.3.1%2Bcu121-cp310-cp310-linux_x86_64.whl" \
+        "${PYTORCH_CU121_WHEEL_BASE}/torchaudio-2.3.1%2Bcu121-cp310-cp310-linux_x86_64.whl" \
+    && python -m pip install -r /tmp/cosyvoice-requirements.txt \
+    && python -m pip install --no-build-isolation openai-whisper==20231117
+
+WORKDIR /workspace/project
+
+CMD ["sleep", "infinity"]

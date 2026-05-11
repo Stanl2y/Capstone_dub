@@ -1,0 +1,26 @@
+.git
+.idea
+.venv*/
+.hf-cache/
+.hf-tools/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+audio/
+bef/
+chunks/
+dub/
+input/
+meta/
+output/
+models/
+# webapp 빌드 산출물 — 컨테이너에서 새로 빌드되어야 하므로 호스트 산출물 제외
+webapp/frontend/node_modules/
+webapp/frontend/dist/
+webapp/frontend/.vite/
+runs/
+configs/runs/

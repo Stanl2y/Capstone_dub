@@ -1,0 +1,50 @@
+# 비밀 키/환경 변수
+.env
+
+# 캐시/IDE
+.hf-cache/
+.docker-tmp/
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+
+# 파이프라인 산출물 (대용량)
+models/
+audio/
+input/
+output/
+dub/
+chunks/
+logs/
+meta/
+bef/
+.external/
+runs/
+configs/runs/
+
+# webapp 빌드 산출물
+webapp/frontend/node_modules/
+webapp/frontend/dist/
+webapp/frontend/.vite/
+webapp/frontend/*.tsbuildinfo
+
+# 외부 라이브러리 (별도 설치)
+third_party/
+
+# 문서 및 작업 메모 (이 레포는 코드 본체만 추적)
+docs/
+DESIGN.md
+checklist.md
+context-notes.md
+conv.md
+next_steps.md
+
+# 디자인 참고 자료
+stitch_modern_slick_interface/
+
+# 잘못 생성된 시스템 경로 (절대 추적 금지)
+C:/
+/C:/

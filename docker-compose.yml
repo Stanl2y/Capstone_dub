@@ -1,0 +1,120 @@
+x-service-defaults: &service-defaults
+  working_dir: /workspace/project
+  tty: true
+  stdin_open: true
+  volumes:
+    - ./:/workspace/project
+  environment:
+    PYTHONPATH: /workspace/project/src
+    HF_HOME: /workspace/project/.hf-cache
+    TRANSFORMERS_CACHE: /workspace/project/.hf-cache
+    HUGGINGFACE_HUB_CACHE: /workspace/project/.hf-cache
+  command: ["sleep", "infinity"]
+
+services:
+  controller:
+    <<: *service-defaults
+    image: movie-dubbing/controller:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu
+      target: controller
+
+  separator:
+    <<: *service-defaults
+    image: movie-dubbing/separator:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+      target: separator
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  diarizer:
+    <<: *service-defaults
+    image: movie-dubbing/diarizer:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.diarizer
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  speaker:
+    <<: *service-defaults
+    image: movie-dubbing/speaker:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+      target: speaker
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  tts-cosyvoice:
+    <<: *service-defaults
+    image: movie-dubbing/tts-cosyvoice:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tts-cosyvoice
+    environment:
+      PYTHONPATH: /workspace/project/src:/workspace/project/third_party/CosyVoice:/workspace/project/third_party/CosyVoice/third_party/Matcha-TTS
+      HF_HOME: /workspace/project/.hf-cache
+      TRANSFORMERS_CACHE: /workspace/project/.hf-cache
+      HUGGINGFACE_HUB_CACHE: /workspace/project/.hf-cache
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  # webapp 백엔드 — FastAPI. 호스트 docker socket 을 통해 위 4개 GPU 서비스로 docker compose exec.
+  webapp-backend:
+    image: movie-dubbing/webapp-backend:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.webapp-backend
+    working_dir: /workspace/project
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./:/workspace/project
+      # 호스트 docker daemon 통신 — Docker Desktop on Windows 도 동일 경로로 매핑
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      PYTHONPATH: /workspace/project/src:/workspace/project
+      # 프로젝트 루트 — pipeline_runner 가 docker compose -f 옵션에 사용
+      PROJECT_ROOT: /workspace/project
+      COMPOSE_PROJECT_NAME: movie-dubbing-project
+    ports:
+      - "8000:8000"
+    command:
+      - uvicorn
+      - webapp.backend.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+
+  # webapp 프론트엔드 — Vite dev server. /api,/static,/ws 는 webapp-backend 로 proxy.
+  webapp-frontend:
+    image: movie-dubbing/webapp-frontend:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.webapp-frontend
+    working_dir: /workspace/frontend
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./webapp/frontend:/workspace/frontend
+      # node_modules 는 컨테이너 안에서만 — 호스트 OS 와 충돌 방지
+      - frontend_node_modules:/workspace/frontend/node_modules
+    environment:
+      VITE_BACKEND_URL: http://webapp-backend:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - webapp-backend
+
+volumes:
+  frontend_node_modules: {}

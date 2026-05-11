@@ -1,0 +1,6 @@
+# 영화 더빙 webapp 백엔드 — FastAPI + WebSocket 의존성
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+aiofiles>=24.1.0
+pydantic>=2.9.0

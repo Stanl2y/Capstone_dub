@@ -1,0 +1,155 @@
+// 15단계 더빙 파이프라인의 화면 표시 메타데이터
+import { PIPELINE_STEPS, type StepName } from "@/api/client";
+
+export interface StepMeta {
+  label: string;
+  shortLabel: string;
+  description: string;
+  service: string;
+  inputs: string[];
+  outputs: string[];
+}
+
+export interface PipelinePhase {
+  id: string;
+  label: string;
+  steps: StepName[];
+}
+
+export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
+  extract_audio: {
+    label: "Extract Audio",
+    shortLabel: "extract_audio",
+    description: "입력 영상에서 원본 오디오 트랙을 추출합니다.",
+    service: "controller",
+    inputs: ["input.mp4"],
+    outputs: ["raw.wav"],
+  },
+  separate_audio: {
+    label: "Separate Audio",
+    shortLabel: "separate_audio",
+    description: "Demucs로 보컬과 배경음을 분리합니다.",
+    service: "demucs",
+    inputs: ["raw.wav"],
+    outputs: ["vocals.wav", "no_vocals.wav"],
+  },
+  diarize: {
+    label: "Diarize",
+    shortLabel: "diarize",
+    description: "화자 구간을 추정하고 RTTM 결과를 만듭니다.",
+    service: "speaker",
+    inputs: ["vocals.wav"],
+    outputs: ["speaker.rttm"],
+  },
+  rttm_to_json: {
+    label: "RTTM to JSON",
+    shortLabel: "rttm_to_json",
+    description: "RTTM을 파이프라인에서 쓰는 JSON chunk 구조로 변환합니다.",
+    service: "controller",
+    inputs: ["speaker.rttm"],
+    outputs: ["chunks.json"],
+  },
+  merge_chunks: {
+    label: "Merge Chunks",
+    shortLabel: "merge_chunks",
+    description: "짧거나 인접한 발화 구간을 더빙 단위로 병합합니다.",
+    service: "controller",
+    inputs: ["chunks.json"],
+    outputs: ["merged.json"],
+  },
+  cut_chunks: {
+    label: "Cut Chunks",
+    shortLabel: "cut_chunks",
+    description: "각 발화 구간의 원본 오디오 조각을 저장합니다.",
+    service: "controller",
+    inputs: ["merged.json", "vocals.wav"],
+    outputs: ["chunk_*.wav"],
+  },
+  extract_emotion: {
+    label: "Extract Emotion",
+    shortLabel: "extract_emotion",
+    description: "발화별 감정 벡터와 스타일 힌트를 추출합니다.",
+    service: "speaker",
+    inputs: ["chunk_*.wav"],
+    outputs: ["emotion.json"],
+  },
+  run_asr: {
+    label: "Run ASR",
+    shortLabel: "run_asr",
+    description: "원본 발화의 텍스트를 인식합니다.",
+    service: "speaker",
+    inputs: ["chunk_*.wav"],
+    outputs: ["asr.json"],
+  },
+  translate: {
+    label: "Translate",
+    shortLabel: "translate",
+    description: "ASR 텍스트를 목표 언어로 번역합니다.",
+    service: "controller",
+    inputs: ["asr.json"],
+    outputs: ["translated.json"],
+  },
+  build_timeline: {
+    label: "Build Timeline",
+    shortLabel: "build_timeline",
+    description: "번역문, 화자, 감정, 타이밍을 하나의 master timeline으로 합칩니다.",
+    service: "controller",
+    inputs: ["translated.json", "emotion.json"],
+    outputs: ["timeline.json"],
+  },
+  generate_tts_instructions: {
+    label: "Generate TTS Instructions",
+    shortLabel: "tts_instructions",
+    description: "CosyVoice 입력 프롬프트와 스타일 지시문을 생성합니다.",
+    service: "controller",
+    inputs: ["timeline.json"],
+    outputs: ["tts_jobs.json"],
+  },
+  run_tts: {
+    label: "Run TTS",
+    shortLabel: "run_tts",
+    description: "각 chunk의 한국어 더빙 음성을 합성합니다.",
+    service: "tts-cosyvoice",
+    inputs: ["tts_jobs.json"],
+    outputs: ["chunk_*_dub.wav"],
+  },
+  validate_tts: {
+    label: "Validate TTS",
+    shortLabel: "validate_tts",
+    description: "합성 음성 길이와 실패 chunk를 검증합니다.",
+    service: "speaker",
+    inputs: ["chunk_*_dub.wav"],
+    outputs: ["tts_report.json"],
+  },
+  compose_audio: {
+    label: "Compose Audio",
+    shortLabel: "compose_audio",
+    description: "합성 음성을 배경음과 맞춰 최종 오디오로 합성합니다.",
+    service: "controller",
+    inputs: ["chunk_*_dub.wav", "no_vocals.wav"],
+    outputs: ["dubbed.wav"],
+  },
+  mux: {
+    label: "Mux",
+    shortLabel: "mux",
+    description: "최종 오디오를 원본 영상과 mux하여 결과 영상을 만듭니다.",
+    service: "controller",
+    inputs: ["dubbed.wav", "input.mp4"],
+    outputs: ["output.mp4"],
+  },
+};
+
+export const PIPELINE_PHASES: PipelinePhase[] = [
+  { id: "audio", label: "Audio Prep", steps: ["extract_audio", "separate_audio"] },
+  { id: "diarization", label: "Diarization & ASR", steps: ["diarize", "rttm_to_json", "merge_chunks", "cut_chunks", "extract_emotion"] },
+  { id: "text", label: "Text Processing", steps: ["run_asr", "translate", "build_timeline"] },
+  { id: "synthesis", label: "Synthesis", steps: ["generate_tts_instructions", "run_tts", "validate_tts", "compose_audio", "mux"] },
+];
+
+export function getStepMeta(step: StepName): StepMeta {
+  return PIPELINE_STEP_META[step];
+}
+
+export function isStepName(value: string | undefined): value is StepName {
+  return Boolean(value && (PIPELINE_STEPS as readonly string[]).includes(value));
+}

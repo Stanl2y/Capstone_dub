@@ -1,0 +1,14 @@
+# webapp-frontend — Vite dev server 를 컨테이너에서 실행 (host 5173 으로 노출, hot reload)
+FROM node:20-alpine
+
+WORKDIR /workspace/frontend
+
+# 의존성 캐시 레이어 — package.json 만 먼저 복사
+COPY webapp/frontend/package.json webapp/frontend/package-lock.json* ./
+# package-lock.json 이 없으면 install 로 생성, 있으면 ci 로 정확 재현
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+# 소스는 compose volume 으로 bind-mount — dev hot reload
+EXPOSE 5173
+
+CMD ["npm", "run", "dev"]

@@ -1,0 +1,68 @@
+x-service-defaults: &service-defaults
+  working_dir: /workspace/project
+  tty: true
+  stdin_open: true
+  volumes:
+    - ./:/workspace/project
+  environment:
+    PYTHONPATH: /workspace/project/src
+    HF_HOME: /workspace/project/.hf-cache
+    TRANSFORMERS_CACHE: /workspace/project/.hf-cache
+    HUGGINGFACE_HUB_CACHE: /workspace/project/.hf-cache
+  command: ["sleep", "infinity"]
+
+services:
+  controller:
+    <<: *service-defaults
+    image: movie-dubbing/controller:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu
+      target: controller
+
+  separator:
+    <<: *service-defaults
+    image: movie-dubbing/separator:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+      target: separator
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  diarizer:
+    <<: *service-defaults
+    image: movie-dubbing/diarizer:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.diarizer
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  speaker:
+    <<: *service-defaults
+    image: movie-dubbing/speaker:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+      target: speaker
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  tts-cosyvoice:
+    <<: *service-defaults
+    image: movie-dubbing/tts-cosyvoice:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tts-cosyvoice
+    environment:
+      PYTHONPATH: /workspace/project/src:/workspace/project/third_party/CosyVoice:/workspace/project/third_party/CosyVoice/third_party/Matcha-TTS
+      HF_HOME: /workspace/project/.hf-cache
+      TRANSFORMERS_CACHE: /workspace/project/.hf-cache
+      HUGGINGFACE_HUB_CACHE: /workspace/project/.hf-cache
+    gpus: all
+    ipc: host
+    shm_size: "8gb"

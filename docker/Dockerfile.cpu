@@ -1,0 +1,26 @@
+FROM python:3.10-slim AS base-cpu
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip setuptools wheel
+
+
+FROM base-cpu AS controller
+
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+
+RUN python -m pip install --index-url ${TORCH_INDEX_URL} --extra-index-url https://pypi.org/simple torch torchvision torchaudio \
+    && python -m pip install numpy soundfile
+
+WORKDIR /workspace/project
+
+CMD ["sleep", "infinity"]
