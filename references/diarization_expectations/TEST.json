@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "media_id": "77506256_TEST",
+  "source_chunks_json": "meta/77506256_TEST/speaker_chunks.json",
+  "defaults": {
+    "min_observed_segment_sec": 0.12,
+    "min_role_coverage": 0.55,
+    "max_non_asr_speech_coverage": 0.25,
+    "sequence_match": "subsequence"
+  },
+  "roles": {
+    "manual_speaker2": {
+      "display": "Manual speaker 2"
+    },
+    "manual_speaker1": {
+      "display": "Manual speaker 1"
+    },
+    "father": {
+      "display": "Sean father"
+    },
+    "mother": {
+      "display": "Sean mother"
+    },
+    "sean": {
+      "display": "Sean",
+      "aliases": ["speaker0"]
+    }
+  },
+  "expectations": [
+    {
+      "id": "TEST:chunk_0006",
+      "chunk_id": "chunk_0006",
+      "start": 14.341,
+      "end": 16.585,
+      "kind": "ordered_roles",
+      "roles": ["manual_speaker2", "manual_speaker1"],
+      "weight": 1.0,
+      "notes": "You shot at Andrew's nephew까지 manual speaker2, Come on, it was funny는 manual speaker1."
+    },
+    {
+      "id": "TEST:chunk_0018",
+      "chunk_id": "chunk_0018",
+      "start": 68.493,
+      "end": 72.037,
+      "kind": "single_role",
+      "role": "father",
+      "weight": 1.0,
+      "notes": "Sean father; previous output labeled it like speaker3, but it is a different character."
+    },
+    {
+      "id": "TEST:chunk_0019",
+      "chunk_id": "chunk_0019",
+      "start": 72.172,
+      "end": 73.185,
+      "kind": "single_role",
+      "role": "mother",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0020",
+      "chunk_id": "chunk_0020",
+      "start": 73.572,
+      "end": 74.45,
+      "kind": "non_asr",
+      "language": "zh",
+      "weight": 1.0,
+      "notes": "Short Chinese effect voice; should not be chunked for ASR/TTS."
+    },
+    {
+      "id": "TEST:chunk_0021",
+      "chunk_id": "chunk_0021",
+      "start": 74.45,
+      "end": 74.855,
+      "kind": "non_asr",
+      "language": "ja",
+      "weight": 1.0,
+      "notes": "Short Japanese effect voice; should not be chunked for ASR/TTS."
+    },
+    {
+      "id": "TEST:chunk_0022",
+      "chunk_id": "chunk_0022",
+      "start": 74.922,
+      "end": 75.26,
+      "kind": "non_asr",
+      "language": "zh",
+      "weight": 1.0,
+      "notes": "Short Chinese effect voice; should not be chunked for ASR/TTS."
+    },
+    {
+      "id": "TEST:chunk_0023",
+      "chunk_id": "chunk_0023",
+      "start": 76.39,
+      "end": 78.5,
+      "kind": "single_role",
+      "role": "father",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0024",
+      "chunk_id": "chunk_0024",
+      "start": 78.533,
+      "end": 81.892,
+      "kind": "single_role",
+      "role": "father",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0025",
+      "chunk_id": "chunk_0025",
+      "start": 81.993,
+      "end": 82.769,
+      "kind": "single_role",
+      "role": "father",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0026",
+      "chunk_id": "chunk_0026",
+      "start": 82.786,
+      "end": 85.975,
+      "kind": "single_role",
+      "role": "father",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0027",
+      "chunk_id": "chunk_0027",
+      "start": 85.975,
+      "end": 86.515,
+      "kind": "single_role",
+      "role": "father",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0028",
+      "chunk_id": "chunk_0028",
+      "start": 86.515,
+      "end": 86.971,
+      "kind": "non_asr",
+      "weight": 1.0,
+      "notes": "Short effect voice; should not be chunked for ASR/TTS."
+    },
+    {
+      "id": "TEST:chunk_0029",
+      "chunk_id": "chunk_0029",
+      "start": 86.971,
+      "end": 88.034,
+      "kind": "single_role",
+      "role": "father",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0030",
+      "chunk_id": "chunk_0030",
+      "start": 88.034,
+      "end": 89.924,
+      "kind": "single_role",
+      "role": "mother",
+      "weight": 1.0
+    },
+    {
+      "id": "TEST:chunk_0031",
+      "chunk_id": "chunk_0031",
+      "start": 92.236,
+      "end": 97.872,
+      "kind": "ordered_roles",
+      "roles": ["father", "sean", "father"],
+      "weight": 1.0,
+      "notes": "What did you do, Sean? is father, No is Sean/speaker0, You stop petting that stupid rabbit is father."
+    }
+  ]
+}

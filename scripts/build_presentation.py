@@ -306,9 +306,10 @@ def slide_pipeline(prs: Presentation, *, idx: int, total: int, num: str, eyebrow
     # 4 service blocks
     services = [
         ("controller", "오케스트레이션", "ffmpeg · 큐 관리"),
-        ("demucs", "보컬 분리", "htdemucs_ft"),
-        ("speaker", "화자/감정/ASR", "pyannote · emotion2vec · Qwen3-ASR"),
-        ("tts-cosyvoice", "한국어 합성", "Fun-CosyVoice3 · zero-shot"),
+        ("separator", "보컬 분리", "BS-RoFormer · MDX23C-InstVoc_HQ"),
+        ("diarizer", "화자 분리", "DiariZen · wespeaker"),
+        ("speaker", "감정 · ASR · 검증", "emotion2vec · Qwen3-ASR"),
+        ("tts-cosyvoice", "한국어 합성", "Fun-CosyVoice3 · instruct2"),
     ]
     n = len(services)
     gap = Emu(280_000)
@@ -473,7 +474,7 @@ def build(out_path: Path) -> None:
                       ("02 · WEB", "검수와 부분 재작업이 가능한 웹 인터페이스",
                        "Dashboard / Projects / Chunks / Compare. 청크 단위 편집과 redub."),
                       ("03 · INFRA", "도커 멀티 서비스로 분리된 파이프라인",
-                       "controller / demucs / speaker / tts-cosyvoice. 어느 머신에서도 같은 결과."),
+                       "controller / separator / diarizer / speaker / tts-cosyvoice. 어느 머신에서도 같은 결과."),
                   ])
 
     slide_pipeline(prs, idx=5, total=TOTAL, num="03",

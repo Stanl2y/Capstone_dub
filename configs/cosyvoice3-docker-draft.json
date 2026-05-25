@@ -7,6 +7,8 @@
     "diarization_rttm": "meta/{input_stem}/diarization.rttm",
     "diarization_json": "meta/{input_stem}/diarization.json",
     "diarization_stabilized_json": "meta/{input_stem}/diarization_stabilized.json",
+    "diarization_refiner_report": "meta/{input_stem}/diarization_team_refiner_report.json",
+    "chunk_overrides_json": "meta/{input_stem}/chunk_overrides.json",
     "speaker_chunks_json": "meta/{input_stem}/speaker_chunks.json",
     "emotion_json": "meta/{input_stem}/emotion.json",
     "asr_json": "meta/{input_stem}/asr.json",
@@ -56,14 +58,48 @@
     "dtype": "float16"
   },
   "chunking": {
-    "speaker_merge_gap_sec": 1,
-    "min_chunk_sec": 0.5,
+    "speaker_merge_gap_sec": 0.2,
+    "min_chunk_sec": 0.2,
     "max_chunk_sec": 15
   },
   "diarization": {
+    "engine": "team_refiner",
     "min_speakers": 1,
     "max_speakers": 7,
     "seg_duration": 8,
+    "team_refiner": {
+      "fallback_to_base_on_error": true,
+      "run_whisperx": true,
+      "language": "en",
+      "whisperx_model": "large-v3",
+      "whisperx_download_dir": "models/whisperx",
+      "torch_cache_dir": "models/torch",
+      "whisperx_batch_size": 1,
+      "eres2netv2": {
+        "enabled": true,
+        "required": false,
+        "cache_dir": "models/modelscope"
+      },
+      "time_gap_split": {
+        "enabled": true,
+        "gap_sec": 5.0,
+        "voice_diff_threshold": 0.15,
+        "min_target_sim": 0.5
+      },
+      "intra_spk_split": {
+        "enabled": true,
+        "min_sim": 0.5,
+        "passes": 3
+      },
+      "sandwich_override": {
+        "enabled": true,
+        "gap_sec": 0.3
+      },
+      "word_level_intra_split": {
+        "enabled": true,
+        "margin": 0.1
+      }
+    },
     "stabilization": {
       "enabled": true,
       "same_speaker_gap_sec": 0.1,

@@ -14,7 +14,7 @@ from webapp.backend.app.api import projects, runs, uploads, ws
 
 PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "/workspace/project"))
 COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "movie-dubbing-project")
-GPU_SERVICES = ("controller", "demucs", "speaker", "tts-cosyvoice")
+GPU_SERVICES = ("controller", "separator", "diarizer", "speaker", "tts-cosyvoice")
 
 app = FastAPI(title="movie-dubbing webapp", version="0.0.1")
 
@@ -47,7 +47,7 @@ _mount_static("output", "output")
 
 @app.get("/api/health")
 def health() -> dict:
-    """docker CLI 통신 + 4개 GPU 서비스 가동 여부 체크."""
+    """docker CLI 통신 + 5개 파이프라인 서비스(controller + separator/diarizer/speaker/tts-cosyvoice) 가동 여부 체크."""
     docker_available = shutil.which("docker") is not None
     services_status: dict[str, str] = {}
     if docker_available:

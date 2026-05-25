@@ -66,6 +66,14 @@ function Detail({ event }: { event: ActivityEvent }) {
       </div>
     );
   }
+  if (event.kind === "chunk_speaker_edit" || event.kind === "chunk_reference_edit") {
+    return (
+      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+        <DiffBox label="before" value={asString(event.before)} tone="mute" />
+        <DiffBox label="after" value={asString(event.after)} tone="primary" />
+      </div>
+    );
+  }
   if (event.kind === "status_change") {
     const before = asString(event.before);
     const after = asString(event.after);
@@ -100,9 +108,12 @@ export function kindMeta(kind: ActivityKind) {
     case "run_created": return { label: "Run 생성", Icon: Plus, bg: "bg-primary/10", fg: "text-primary" };
     case "status_change": return { label: "상태 변경", Icon: ActivityIcon, bg: "bg-surface-container", fg: "text-secondary" };
     case "run_canceled": return { label: "Run 취소", Icon: XCircle, bg: "bg-status-failed/10", fg: "text-status-failed" };
+    case "run_resumed": return { label: "Run 재시작", Icon: RotateCcw, bg: "bg-term-yellow/15", fg: "text-term-yellow" };
     case "chunk_text_edit": return { label: "번역 텍스트 편집", Icon: Edit3, bg: "bg-primary/10", fg: "text-primary" };
     case "chunk_instruction_edit": return { label: "TTS 프롬프트 편집", Icon: MessageSquare, bg: "bg-primary/10", fg: "text-primary" };
     case "chunk_emotion_edit": return { label: "감정 벡터 편집", Icon: Sliders, bg: "bg-primary/10", fg: "text-primary" };
+    case "chunk_speaker_edit": return { label: "Speaker edit", Icon: Edit3, bg: "bg-primary/10", fg: "text-primary" };
+    case "chunk_reference_edit": return { label: "Reference edit", Icon: MessageSquare, bg: "bg-primary/10", fg: "text-primary" };
     case "chunk_redub": return { label: "Chunk Redub", Icon: RotateCcw, bg: "bg-term-yellow/15", fg: "text-term-yellow" };
     case "step_rerun": return { label: "Step 재실행", Icon: PlayCircle, bg: "bg-term-yellow/15", fg: "text-term-yellow" };
   }

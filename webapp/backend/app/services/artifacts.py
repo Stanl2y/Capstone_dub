@@ -8,12 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from common import deep_get, load_config
+from quality_gate import assess_reference_candidate
 
 from webapp.backend.app.models import (
     PIPELINE_STEPS,
     ChunkRow,
     MetricsResponse,
     PatchChunkPayload,
+    PatchChunkUpdate,
+    ReferenceCandidate,
     RunRecord,
     StepArtifact,
     StepDetailRecord,
@@ -26,6 +29,7 @@ PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", Path(__file__).resolve().pare
 _PATH_KEYS: dict[StepName, tuple[list[tuple[str, str]], list[tuple[str, str]]]] = {
     "extract_audio": ([('input video', 'input_video')], [('raw audio', 'paths.raw_audio')]),
     "separate_audio": ([('raw audio', 'paths.raw_audio')], [('dialogue audio', 'paths.dialogue_audio'), ('background audio', 'paths.bgm_audio')]),
+    "redirect_nonspeech": ([("dialogue audio", "paths.dialogue_audio"), ("background audio", "paths.bgm_audio")], [("background audio", "paths.bgm_audio")]),
     "diarize": ([('dialogue audio', 'paths.dialogue_audio')], [('diarization RTTM', 'paths.diarization_rttm')]),
     "rttm_to_json": ([('diarization RTTM', 'paths.diarization_rttm')], [('diarization JSON', 'paths.diarization_json')]),
     "merge_chunks": ([('diarization JSON', 'paths.diarization_json')], [('speaker chunks', 'paths.speaker_chunks_json')]),
@@ -95,6 +99,35 @@ def list_chunks(record: RunRecord) -> list[ChunkRow]:
             emotion_scores=_emotion_scores(source_emotion),
         ))
     return rows
+
+
+def list_speaker_reference_bank(record: RunRecord) -> dict[str, list[ReferenceCandidate]]:
+    config = load_run_config(record)
+    master_path = _config_value(config, "paths.master_timeline_json")
+    rows = _read_json_list(master_path)
+    if not rows:
+        return {}
+    min_prompt_sec = float(deep_get(config, ("tts", "min_prompt_sec"), 1.2) or 1.2)
+    grouped: dict[str, list[ReferenceCandidate]] = {}
+    for row in rows:
+        candidate = _reference_candidate_from_row(row, min_prompt_sec=min_prompt_sec)
+        if candidate is None:
+            continue
+        speaker = candidate.speaker or ""
+        if not speaker:
+            continue
+        grouped.setdefault(speaker, []).append(candidate)
+    for speaker, candidates in grouped.items():
+        grouped[speaker] = sorted(
+            candidates,
+            key=lambda item: (
+                1 if item.accepted else 0,
+                float(item.score or 0.0),
+                float(item.duration or 0.0),
+            ),
+            reverse=True,
+        )
+    return grouped
 
 
 def get_chunk(record: RunRecord, chunk_id: str) -> ChunkRow | None:
@@ -184,64 +217,244 @@ def get_metrics(record: RunRecord) -> MetricsResponse:
 
 
 def patch_chunk(record: RunRecord, chunk_id: str, payload: PatchChunkPayload) -> ChunkRow:
-    if payload.speaker is not None or payload.emotion is not None:
-        raise ValueError("speaker and emotion(legacy) editing are not supported")
+    update = PatchChunkUpdate(chunk_id=chunk_id, **payload.dict())
+    return patch_chunks(record, [update])[0]
+
+
+def patch_chunks(record: RunRecord, updates: list[PatchChunkUpdate]) -> list[ChunkRow]:
+    if not updates:
+        return []
+    if any(update.emotion is not None for update in updates):
+        raise ValueError("emotion(legacy) editing is not supported")
+
+    chunk_ids = [update.chunk_id for update in updates]
+    if len(set(chunk_ids)) != len(chunk_ids):
+        raise ValueError("duplicate chunk_id")
+
+    existing_ids = {row.chunk_id for row in list_chunks(record)}
+    missing = [chunk_id for chunk_id in chunk_ids if chunk_id not in existing_ids]
+    if missing:
+        raise KeyError(missing[0])
 
     config = load_run_config(record)
     master_path = _config_value(config, "paths.master_timeline_json")
     master_rows = _read_json_list(master_path)
+    overrides_path = _chunk_overrides_path_value(config)
+    chunk_overrides = _read_json_object(overrides_path)
+    translated_path = _config_value(config, "paths.translated_json")
+    translated_rows = _read_json_list(translated_path)
+    master_changed = False
+    overrides_changed = False
+    translated_changed = False
 
-    nothing_to_do = (
-        payload.translated_text is None
-        and payload.tts_instruct_text is None
-        and payload.emotion_label is None
-        and payload.emotion_scores is None
-    )
-    if nothing_to_do:
-        existing = get_chunk(record, chunk_id)
-        if existing is None:
-            raise KeyError(chunk_id)
-        return existing
+    for update in updates:
+        nothing_to_do = (
+            update.speaker is None
+            and update.reference_mode is None
+            and update.reference_chunk_id is None
+            and update.translated_text is None
+            and update.tts_instruct_text is None
+            and update.emotion_label is None
+            and update.emotion_scores is None
+        )
+        if nothing_to_do:
+            continue
 
-    changed = False
-
-    # 1) translated_text 변경 — translated.json + master_timeline 양쪽에 반영
-    if payload.translated_text is not None:
-        translated_path = _config_value(config, "paths.translated_json")
-        translated_rows = _read_json_list(translated_path)
-        if translated_rows:
-            if _patch_translation_rows(translated_rows, chunk_id, payload.translated_text, stale=False):
-                _write_json(translated_path, translated_rows)
+        changed = False
+        if update.translated_text is not None:
+            if translated_rows and _patch_translation_rows(translated_rows, update.chunk_id, update.translated_text, stale=False):
+                translated_changed = True
                 changed = True
-        if master_rows and _patch_translation_rows(master_rows, chunk_id, payload.translated_text, stale=True):
-            changed = True
+            if master_rows and _patch_translation_rows(master_rows, update.chunk_id, update.translated_text, stale=True):
+                master_changed = True
+                changed = True
 
-    # 2) tts_instruct_text / emotion(label, scores) — master_timeline 만 갱신
-    if (
-        payload.tts_instruct_text is not None
-        or payload.emotion_label is not None
-        or payload.emotion_scores is not None
-    ):
-        if not master_rows:
-            raise KeyError(chunk_id)
-        if _patch_master_for_advanced_fields(
-            master_rows,
-            chunk_id,
-            tts_instruct_text=payload.tts_instruct_text,
-            emotion_label=payload.emotion_label,
-            emotion_scores=payload.emotion_scores,
-        ):
-            changed = True
+        if update.speaker is not None or update.reference_mode is not None or update.reference_chunk_id is not None:
+            if not master_rows:
+                raise KeyError(update.chunk_id)
+            if _patch_chunk_override(
+                chunk_overrides,
+                update.chunk_id,
+                speaker=update.speaker,
+                reference_mode=update.reference_mode,
+                reference_chunk_id=update.reference_chunk_id,
+            ):
+                overrides_changed = True
+            if _patch_master_for_speaker_reference(
+                master_rows,
+                update.chunk_id,
+                speaker=update.speaker,
+                reference_mode=update.reference_mode,
+                reference_chunk_id=update.reference_chunk_id,
+            ):
+                master_changed = True
+                changed = True
 
-    if changed and master_rows:
+        if update.tts_instruct_text is not None or update.emotion_label is not None or update.emotion_scores is not None:
+            if not master_rows:
+                raise KeyError(update.chunk_id)
+            if _patch_master_for_advanced_fields(
+                master_rows,
+                update.chunk_id,
+                tts_instruct_text=update.tts_instruct_text,
+                emotion_label=update.emotion_label,
+                emotion_scores=update.emotion_scores,
+            ):
+                master_changed = True
+                changed = True
+
+        if not changed:
+            raise KeyError(update.chunk_id)
+
+    if translated_changed:
+        _write_json(translated_path, translated_rows)
+    if overrides_changed:
+        _write_json(overrides_path, chunk_overrides)
+    if master_changed:
         _write_json(master_path, master_rows)
 
-    if not changed:
-        raise KeyError(chunk_id)
-    updated = get_chunk(record, chunk_id)
-    if updated is None:
-        raise KeyError(chunk_id)
-    return updated
+    updated = {row.chunk_id: row for row in list_chunks(record)}
+    return [updated[chunk_id] for chunk_id in chunk_ids]
+
+
+def _chunk_overrides_path_value(config: dict[str, Any]) -> str:
+    configured = _config_value(config, "paths.chunk_overrides_json")
+    if configured:
+        return configured
+    master_path = _config_value(config, "paths.master_timeline_json")
+    if master_path:
+        return _project_relative(_resolve_project_path(master_path).with_name("chunk_overrides.json"))
+    return "meta/input/chunk_overrides.json"
+
+
+def _read_json_object(path_value: str | None) -> dict[str, Any]:
+    if not path_value:
+        return {}
+    path = _resolve_project_path(path_value)
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8-sig") as fp:
+        data = json.load(fp)
+    return data if isinstance(data, dict) else {}
+
+
+def _normalize_reference_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "auto", "default"}:
+        return "auto"
+    if normalized in {"self", "self_only", "force_self"}:
+        return "self"
+    if normalized in {"speaker_bank", "speaker_best", "bank", "best"}:
+        return "speaker_bank"
+    if normalized == "manual":
+        return "manual"
+    raise ValueError(f"unsupported reference_mode: {value}")
+
+
+def _patch_chunk_override(
+    overrides: dict[str, Any],
+    chunk_id: str,
+    *,
+    speaker: str | None,
+    reference_mode: str | None,
+    reference_chunk_id: str | None,
+) -> bool:
+    current = dict(overrides.get(chunk_id) or {})
+    before = json.dumps(current, ensure_ascii=False, sort_keys=True)
+
+    if speaker is not None:
+        clean_speaker = str(speaker).strip()
+        if not clean_speaker:
+            raise ValueError("speaker must not be blank")
+        current["speaker"] = clean_speaker
+
+    if reference_mode is not None:
+        clean_mode = _normalize_reference_mode(reference_mode)
+        if clean_mode == "auto":
+            current.pop("reference_mode", None)
+            current.pop("reference_chunk_id", None)
+        else:
+            current["reference_mode"] = clean_mode
+            if clean_mode == "self":
+                current.pop("reference_chunk_id", None)
+    if reference_chunk_id is not None:
+        clean_reference = str(reference_chunk_id).strip()
+        if clean_reference:
+            current["reference_chunk_id"] = clean_reference
+        else:
+            current.pop("reference_chunk_id", None)
+
+    if current:
+        overrides[chunk_id] = current
+    else:
+        overrides.pop(chunk_id, None)
+    after = json.dumps(overrides.get(chunk_id) or {}, ensure_ascii=False, sort_keys=True)
+    return before != after
+
+
+def _patch_master_for_speaker_reference(
+    rows: list[dict[str, Any]],
+    chunk_id: str,
+    *,
+    speaker: str | None,
+    reference_mode: str | None,
+    reference_chunk_id: str | None,
+) -> bool:
+    for row in rows:
+        if str(row.get("chunk_id", "")) != chunk_id:
+            continue
+        before = json.dumps(
+            {
+                "speaker": row.get("speaker"),
+                "reference_mode_override": row.get("reference_mode_override"),
+                "reference_chunk_id_override": row.get("reference_chunk_id_override"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if speaker is not None:
+            clean_speaker = str(speaker).strip()
+            if not clean_speaker:
+                raise ValueError("speaker must not be blank")
+            if clean_speaker != str(row.get("speaker", "") or ""):
+                row.setdefault("speaker_original", row.get("speaker"))
+                row["speaker"] = clean_speaker
+                row["speaker_override"] = True
+
+        if reference_mode is not None:
+            clean_mode = _normalize_reference_mode(reference_mode)
+            if clean_mode == "auto":
+                row.pop("reference_mode_override", None)
+                row.pop("reference_chunk_id_override", None)
+            else:
+                row["reference_mode_override"] = clean_mode
+                if clean_mode == "self":
+                    row.pop("reference_chunk_id_override", None)
+        if reference_chunk_id is not None:
+            clean_reference = str(reference_chunk_id).strip()
+            if clean_reference:
+                row["reference_chunk_id_override"] = clean_reference
+            else:
+                row.pop("reference_chunk_id_override", None)
+
+        after = json.dumps(
+            {
+                "speaker": row.get("speaker"),
+                "reference_mode_override": row.get("reference_mode_override"),
+                "reference_chunk_id_override": row.get("reference_chunk_id_override"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if before != after:
+            row["dub_stale"] = True
+            row.pop("dub_error", None)
+            row.pop("dub_input_signature", None)
+            row.pop("dub_reference_chunk_id", None)
+            row.pop("dub_reference_wav", None)
+            row.pop("dub_reference_mode", None)
+        return True
+    return False
 
 
 def _patch_master_for_advanced_fields(
@@ -305,15 +518,26 @@ def _patch_master_for_advanced_fields(
 
 
 def mark_chunk_stale(record: RunRecord, chunk_id: str) -> None:
+    mark_chunks_stale(record, [chunk_id])
+
+
+def mark_chunks_stale(record: RunRecord, chunk_ids: list[str]) -> None:
+    ids = list(dict.fromkeys(chunk_ids))
+    if not ids:
+        return
     config = load_run_config(record)
     master_path = _config_value(config, "paths.master_timeline_json")
     rows = _read_json_list(master_path)
+    found: set[str] = set()
     for row in rows:
-        if str(row.get("chunk_id", "")) == chunk_id:
+        chunk_id = str(row.get("chunk_id", ""))
+        if chunk_id in ids:
             row["dub_stale"] = True
-            _write_json(master_path, rows)
-            return
-    raise KeyError(chunk_id)
+            found.add(chunk_id)
+    missing = [chunk_id for chunk_id in ids if chunk_id not in found]
+    if missing:
+        raise KeyError(missing[0])
+    _write_json(master_path, rows)
 
 
 def downstream_steps(from_step: StepName) -> list[StepName]:
@@ -345,6 +569,37 @@ def _patch_translation_rows(rows: list[dict[str, Any]], chunk_id: str, text: str
     return False
 
 
+def _reference_candidate_from_row(row: dict[str, Any], *, min_prompt_sec: float) -> ReferenceCandidate | None:
+    chunk_id = str(row.get("chunk_id", "") or "").strip()
+    wav = _string_or_none(row.get("wav"))
+    if not chunk_id or not wav:
+        return None
+    duration = _duration_original(row)
+    feature = row.get("source_audio_summary") if isinstance(row.get("source_audio_summary"), dict) else None
+    assessment = assess_reference_candidate(
+        {
+            "wav": wav,
+            "text_src": str(row.get("text_src", "") or ""),
+            "duration": duration or 0.0,
+        },
+        chunk_feature=feature,
+        min_prompt_sec=min_prompt_sec,
+    )
+    return ReferenceCandidate(
+        chunk_id=chunk_id,
+        speaker=_string_or_none(row.get("speaker")),
+        start=_float_or_none(row.get("start")),
+        end=_float_or_none(row.get("end")),
+        duration=duration,
+        text_src=_string_or_none(row.get("text_src")),
+        wav=wav,
+        accepted=bool(assessment.get("accepted")),
+        score=_float_or_none(assessment.get("score")),
+        warnings=[str(item) for item in assessment.get("warnings", [])],
+        critical_flags=[str(item) for item in assessment.get("critical_flags", [])],
+    )
+
+
 def _chunk_from_timeline(row: dict[str, Any]) -> ChunkRow:
     source_emotion = row.get("source_emotion")
     error = _string_or_none(row.get("dub_error") or row.get("tts_validation_error") or row.get("emotion_error"))
@@ -370,6 +625,11 @@ def _chunk_from_timeline(row: dict[str, Any]) -> ChunkRow:
         emotion_scores=_emotion_scores(source_emotion),
         tts_instruct_text=_string_or_none(row.get("tts_instruct_text")),
         tts_instruct_source=_string_or_none(row.get("tts_instruct_source")),
+        reference_mode=_string_or_none(row.get("reference_mode_override") or row.get("dub_reference_mode")),
+        reference_chunk_id=_string_or_none(row.get("reference_chunk_id_override") or row.get("dub_reference_chunk_id")),
+        reference_audio=_string_or_none(row.get("dub_reference_wav")),
+        reference_override_mode=_string_or_none(row.get("reference_mode_override")),
+        reference_override_chunk_id=_string_or_none(row.get("reference_chunk_id_override")),
         translation_blocked=blocked,
         translation_blocked_reason=_string_or_none(row.get("translation_blocked_reason")),
     )

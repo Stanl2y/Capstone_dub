@@ -118,24 +118,42 @@ def step_redirect_nonspeech(config: dict) -> None:
 
 
 def step_diarize(config: dict) -> None:
-    diarize_audio(
-        select_audio_path(config, "dialogue_audio"),
-        require_value(config, ("paths", "diarization_rttm")),
-        model_dir=require_value(config, ("models", "diarization")),
-        embedding_model_dir=require_value(config, ("models", "diarization_embedding")),
-        device=str(deep_get(config, ("runtime", "device"), "cuda:0")),
-        max_speakers=deep_get(config, ("diarization", "max_speakers")),
-        min_speakers=deep_get(config, ("diarization", "min_speakers")),
-        ahc_threshold=deep_get(config, ("diarization", "ahc_threshold")),
-        fa=deep_get(config, ("diarization", "fa")),
-        fb=deep_get(config, ("diarization", "fb")),
-        lda_dim=deep_get(config, ("diarization", "lda_dim")),
-        max_iters=deep_get(config, ("diarization", "max_iters")),
-        method=deep_get(config, ("diarization", "method")),
-        min_cluster_size=deep_get(config, ("diarization", "min_cluster_size")),
-        seg_duration=deep_get(config, ("diarization", "seg_duration")),
-        segmentation_step=deep_get(config, ("diarization", "segmentation_step")),
-    )
+    diarization_kwargs = {
+        "model_dir": require_value(config, ("models", "diarization")),
+        "embedding_model_dir": require_value(config, ("models", "diarization_embedding")),
+        "device": str(deep_get(config, ("runtime", "device"), "cuda:0")),
+        "max_speakers": deep_get(config, ("diarization", "max_speakers")),
+        "min_speakers": deep_get(config, ("diarization", "min_speakers")),
+        "ahc_threshold": deep_get(config, ("diarization", "ahc_threshold")),
+        "ahc_criterion": deep_get(config, ("diarization", "ahc_criterion")),
+        "fa": deep_get(config, ("diarization", "fa")),
+        "fb": deep_get(config, ("diarization", "fb")),
+        "lda_dim": deep_get(config, ("diarization", "lda_dim")),
+        "max_iters": deep_get(config, ("diarization", "max_iters")),
+        "method": deep_get(config, ("diarization", "method")),
+        "min_cluster_size": deep_get(config, ("diarization", "min_cluster_size")),
+        "seg_duration": deep_get(config, ("diarization", "seg_duration")),
+        "segmentation_step": deep_get(config, ("diarization", "segmentation_step")),
+        "batch_size": deep_get(config, ("diarization", "batch_size")),
+        "apply_median_filtering": deep_get(config, ("diarization", "apply_median_filtering")),
+    }
+    input_audio = select_audio_path(config, "dialogue_audio")
+    output_rttm = require_value(config, ("paths", "diarization_rttm"))
+    engine = str(deep_get(config, ("diarization", "engine"), "diarizen")).strip().lower()
+    if engine in {"team_refiner", "team_v195", "v195"}:
+        from team_diarization import diarize_with_team_refiner
+
+        diarize_with_team_refiner(
+            input_audio,
+            output_rttm,
+            report_json=deep_get(config, ("paths", "diarization_refiner_report")),
+            refiner_config=deep_get(config, ("diarization", "team_refiner"), {}) or {},
+            **diarization_kwargs,
+        )
+        return
+    if engine != "diarizen":
+        raise ValueError(f"Unsupported diarization.engine: {engine}")
+    diarize_audio(input_audio, output_rttm, **diarization_kwargs)
 
 
 def _diarization_stabilization_enabled(config: dict) -> bool:
@@ -257,6 +275,7 @@ def step_build_timeline(config: dict) -> None:
         require_value(config, ("paths", "master_timeline_json")),
         dub_dir=require_value(config, ("paths", "dub_dir")),
         emotion_json=deep_get(config, ("paths", "emotion_json")),
+        chunk_overrides_json=deep_get(config, ("paths", "chunk_overrides_json")),
         dub_runtime=_build_dub_runtime_from_config(config),
     )
 

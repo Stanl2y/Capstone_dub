@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronDown, ChevronUp, Database, Loader2, RefreshCcw, Sliders, X } from "lucide-react";
-import { api, isOptionalEndpointMissing, type ChunkRow, type RunRecord } from "@/api/client";
+import { api, isOptionalEndpointMissing, type ChunkRow, type PatchChunkPayload, type ReferenceCandidate, type RunRecord } from "@/api/client";
 import { ChunkInspectorTable } from "@/components/chunks/ChunkInspectorTable";
 import { EmotionEqualizer } from "@/components/chunks/EmotionEqualizer";
 import { LogTail } from "@/components/LogTail";
@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/card";
 import { PillInput } from "@/components/ui/pill-input";
 import { useRunSocket } from "@/hooks/useRunSocket";
 import { canCompareOutput, canInspectChunks, canPlayChunkAudio, stepRecord } from "@/lib/runReadiness";
+import { toStaticUrl } from "@/lib/staticUrl";
 import { ensureEndOfPrompt, hasNonLatinScript, stripEndOfPrompt, stripTokenOnly } from "@/lib/ttsInstruct";
 
 type ToastKind = "redub-done" | "final-done" | null;
@@ -21,6 +22,8 @@ export function Chunks() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string>();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set<string>());
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [speakerFilter, setSpeakerFilter] = useState("all");
   const [emotionFilter, setEmotionFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -29,6 +32,7 @@ export function Chunks() {
   const [toast, setToast] = useState<ToastKind>(null);
   const [pendingAction, setPendingAction] = useState<"redub" | "final" | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
   const runQuery = useQuery({
     queryKey: ["run", id],
@@ -51,12 +55,29 @@ export function Chunks() {
     // 페이지 재진입 시 즉시 캐시 노출 + 백그라운드 갱신 — "세션 만료"처럼 느껴지지 않도록
     staleTime: 30_000,
   });
+  const referenceBankQuery = useQuery({
+    queryKey: ["speaker-reference-bank", id],
+    queryFn: () => api.getSpeakerReferenceBank(id),
+    enabled: ready,
+    retry: 1,
+    staleTime: 30_000,
+  });
   const rows = chunksQuery.data ?? [];
+  const referenceBank = referenceBankQuery.data ?? {};
   const filteredRows = useMemo(() => filterRows(rows, speakerFilter, emotionFilter, search, problemOnly), [rows, speakerFilter, emotionFilter, search, problemOnly]);
+  const selectedRows = useMemo(() => rows.filter((row) => selectedIds.has(row.chunk_id)), [rows, selectedIds]);
   const selected = filteredRows.find((row) => row.chunk_id === selectedId) ?? filteredRows[0];
+  const selectedRedubBlocked = Boolean(selected?.translation_blocked) || selected?.status === "blocked";
   const speakers = unique(rows.map((row) => row.speaker).filter(Boolean) as string[]);
   const emotions = unique(rows.map((row) => row.emotion).filter(Boolean) as string[]);
   const endpointMissing = chunksQuery.isError && isOptionalEndpointMissing(chunksQuery.error);
+  const repairCounts = useMemo(() => {
+    const stale = rows.filter((row) => row.dub_stale || row.status === "stale").length;
+    const failed = rows.filter((row) => row.error || row.status === "error").length;
+    const blocked = rows.filter((row) => row.translation_blocked || row.status === "blocked").length;
+    const missingReference = rows.filter((row) => row.reference_mode !== "self" && !row.reference_chunk_id).length;
+    return { stale, failed, blocked, missingReference, total: stale + failed + blocked + missingReference };
+  }, [rows]);
 
   const muxStep = stepRecord(runQuery.data, "mux");
   const muxPending = muxStep?.state === "pending";
@@ -100,6 +121,18 @@ export function Chunks() {
     if (writesDisabled) setTerminalOpen(true);
   }, [writesDisabled]);
 
+  useEffect(() => {
+    if (!selected) setMobileDetailOpen(false);
+  }, [selected]);
+
+  useEffect(() => {
+    const available = new Set(rows.map((row) => row.chunk_id));
+    setSelectedIds((prev) => {
+      const next = new Set([...prev].filter((chunkId) => available.has(chunkId)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
+
   // 5초 후 자동 dismiss
   useEffect(() => {
     if (!toast) return;
@@ -107,10 +140,32 @@ export function Chunks() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  const toggleSelect = (row: ChunkRow) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(row.chunk_id)) next.delete(row.chunk_id);
+      else next.add(row.chunk_id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const allVisibleSelected = filteredRows.length > 0 && filteredRows.every((row) => next.has(row.chunk_id));
+      for (const row of filteredRows) {
+        if (allVisibleSelected) next.delete(row.chunk_id);
+        else next.add(row.chunk_id);
+      }
+      return next;
+    });
+  };
+
   const updateMutation = useMutation({
     mutationFn: ({ chunkId, payload }: { chunkId: string; payload: Parameters<typeof api.patchChunk>[2] }) => api.patchChunk(id, chunkId, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["chunks", id] });
+      queryClient.invalidateQueries({ queryKey: ["speaker-reference-bank", id] });
       queryClient.invalidateQueries({ queryKey: ["run", id] });
       queryClient.invalidateQueries({ queryKey: ["metrics", id] });
     },
@@ -124,8 +179,40 @@ export function Chunks() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["chunks", id] });
+      queryClient.invalidateQueries({ queryKey: ["speaker-reference-bank", id] });
       queryClient.invalidateQueries({ queryKey: ["run", id] });
       queryClient.invalidateQueries({ queryKey: ["metrics", id] });
+      queryClient.invalidateQueries({ queryKey: ["log", id] });
+    },
+    onError: () => {
+      setRedubbingId(null);
+      setPendingAction(null);
+    },
+  });
+  const bulkUpdateMutation = useMutation({
+    mutationFn: ({ chunkIds, payload }: { chunkIds: string[]; payload: PatchChunkPayload }) =>
+      api.patchChunks(id, { updates: chunkIds.map((chunkId) => ({ chunk_id: chunkId, ...payload })) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["chunks", id] });
+      queryClient.invalidateQueries({ queryKey: ["speaker-reference-bank", id] });
+      queryClient.invalidateQueries({ queryKey: ["run", id] });
+      queryClient.invalidateQueries({ queryKey: ["metrics", id] });
+      setBulkEditOpen(false);
+    },
+  });
+  const bulkRedubMutation = useMutation({
+    mutationFn: (chunkIds: string[]) => api.redubChunks(id, { chunk_ids: chunkIds }),
+    onMutate: (chunkIds) => {
+      setRedubbingId(`${chunkIds.length} chunks`);
+      setPendingAction("redub");
+      setToast(null);
+      setTerminalOpen(true);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["chunks", id] });
+      queryClient.invalidateQueries({ queryKey: ["run", id] });
+      queryClient.invalidateQueries({ queryKey: ["metrics", id] });
+      queryClient.invalidateQueries({ queryKey: ["log", id] });
     },
     onError: () => {
       setRedubbingId(null);
@@ -145,6 +232,9 @@ export function Chunks() {
       setPendingAction(null);
     },
   });
+
+  const chunkActionPending = updateMutation.isPending || redubMutation.isPending || bulkUpdateMutation.isPending || bulkRedubMutation.isPending;
+  const chunkWritesDisabled = writesDisabled || chunkActionPending;
 
   if (runQuery.isLoading) return <PageFrame><EmptyState title="run을 불러오는 중입니다" body="Chunk 산출물 사용 가능 여부를 확인하고 있습니다." runId={id} /></PageFrame>;
   if (!runQuery.data) return <PageFrame><EmptyState title="run을 찾을 수 없습니다" body="Run History에서 존재하는 run을 선택하세요." runId={id} /></PageFrame>;
@@ -178,21 +268,21 @@ export function Chunks() {
 
   return (
     <section
-      className="grid h-[calc(100vh-56px)] grid-cols-[minmax(720px,1fr)_360px] overflow-hidden bg-background"
+      className="grid h-[calc(100vh-56px)] grid-cols-1 overflow-hidden bg-background lg:grid-cols-[minmax(720px,1fr)_360px]"
       style={{
         gridTemplateRows: `minmax(0,1fr) ${terminalOpen ? "260px" : "44px"}`,
         // 쫀들한 spring-like easing — back-out 커브로 살짝 튀는 느낌
         transition: "grid-template-rows 320ms cubic-bezier(0.34, 1.32, 0.64, 1)",
       }}
     >
-      <main className="flex min-w-0 flex-col overflow-hidden border-r border-border-hairline bg-surface-container-lowest">
+      <main className="flex min-w-0 flex-col overflow-hidden bg-surface-container-lowest lg:border-r lg:border-border-hairline">
         <header className="shrink-0 border-b border-border-hairline p-5">
-          <div className="mb-5 flex items-center justify-between gap-5">
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-5">
             <div>
               <p className="font-mono text-data-label uppercase text-data-label">Chunk Inspector</p>
               <h1 className="mt-1 font-display text-heading-lg text-primary">청크별 번역과 더빙 상태</h1>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               {redubbingId ? (
                 <span className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-caption-strong text-primary">
                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -209,11 +299,30 @@ export function Chunks() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            {repairCounts.total > 0 ? (
+              <div className="flex w-full flex-wrap items-center gap-2 rounded-[1.25rem] border border-border-hairline bg-surface-soft p-2">
+                <span className="px-2 font-mono text-data-label uppercase text-data-label">Review queue</span>
+                <RepairChip label="Stale" count={repairCounts.stale} active={problemOnly} onClick={() => setProblemOnly(true)} />
+                <RepairChip label="Error" count={repairCounts.failed} active={problemOnly} onClick={() => setProblemOnly(true)} />
+                <RepairChip label="Blocked" count={repairCounts.blocked} active={problemOnly} onClick={() => setProblemOnly(true)} />
+                <RepairChip label="Needs ref" count={repairCounts.missingReference} active={problemOnly} onClick={() => setProblemOnly(true)} />
+                {problemOnly ? <button type="button" onClick={() => setProblemOnly(false)} className="ml-auto rounded-full px-3 py-1 text-caption-strong text-secondary hover:bg-white">Show all</button> : null}
+              </div>
+            ) : null}
             <Select value={speakerFilter} onChange={setSpeakerFilter} options={["all", ...speakers]} label="speaker" />
             <Select value={emotionFilter} onChange={setEmotionFilter} options={["all", ...emotions]} label="emotion" />
-            <PillInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search text" className="w-64" />
+            <PillInput name="chunk-search" aria-label="Search chunk text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search text" className="min-w-0 flex-1 sm:w-64 sm:flex-none" />
             <button type="button" onClick={() => setProblemOnly(!problemOnly)} className={`h-10 rounded-full px-4 text-body-sm-strong ${problemOnly ? "bg-primary text-white" : "bg-surface-soft text-secondary hover:bg-surface-container"}`}>Show Stale/Error Only</button>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
+              <Button
+                variant="secondary"
+                onClick={() => selected && redubMutation.mutate(selected.chunk_id)}
+                disabled={!selected || selectedRedubBlocked || chunkWritesDisabled}
+                className="h-10"
+                title={selectedRedubBlocked ? "번역 차단 chunk는 먼저 번역문을 입력해야 합니다" : "현재 선택한 chunk를 다시 더빙"}
+              >
+                <RefreshCcw className="mr-2 h-4 w-4" />Redub Chunk
+              </Button>
               <Link to={`/runs/${id}/activity`} className="inline-flex h-10 items-center rounded-full border border-border-hairline bg-surface-soft px-4 text-body-sm-strong text-primary hover:bg-surface-container">Activity</Link>
               {muxDone && canCompareOutput(runQuery.data) ? (
                 <Link to={`/runs/${id}/compare`} className="inline-flex h-10 items-center rounded-full border border-border-hairline bg-surface-soft px-4 text-body-sm-strong text-primary hover:bg-surface-container">Compare</Link>
@@ -233,31 +342,111 @@ export function Chunks() {
             </div>
           </div>
         </header>
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <ChunkInspectorTable rows={filteredRows} selectedId={selected?.chunk_id} writesDisabled={writesDisabled || updateMutation.isPending || redubMutation.isPending} audioReady={canPlayChunkAudio(runQuery.data)} onSelect={(row) => setSelectedId(row.chunk_id)} onUpdateText={(row, text) => updateMutation.mutate({ chunkId: row.chunk_id, payload: { translated_text: text } })} />
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div className="hidden h-full lg:block">
+            <ChunkInspectorTable
+              rows={filteredRows}
+              selectedId={selected?.chunk_id}
+              selectedIds={selectedIds}
+              writesDisabled={chunkWritesDisabled}
+              audioReady={canPlayChunkAudio(runQuery.data)}
+              onSelect={(row) => setSelectedId(row.chunk_id)}
+              onToggleSelect={toggleSelect}
+              onToggleAllVisible={toggleAllVisible}
+              onUpdateText={(row, text) => updateMutation.mutate({ chunkId: row.chunk_id, payload: { translated_text: text } })}
+            />
+          </div>
+          <ChunkCardList
+            rows={filteredRows}
+            selectedId={selected?.chunk_id}
+            selectedIds={selectedIds}
+            writesDisabled={chunkWritesDisabled}
+            audioReady={canPlayChunkAudio(runQuery.data)}
+            onSelect={(row) => setSelectedId(row.chunk_id)}
+            onOpenDetails={(row) => {
+              setSelectedId(row.chunk_id);
+              setMobileDetailOpen(true);
+            }}
+            onToggleSelect={toggleSelect}
+            onUpdateText={(row, text) => updateMutation.mutate({ chunkId: row.chunk_id, payload: { translated_text: text } })}
+          />
+          {selectedRows.length > 0 ? (
+            <div className="pointer-events-none absolute inset-x-3 bottom-3 z-20 lg:inset-x-5">
+              <div className="pointer-events-auto mx-auto max-w-5xl">
+                {bulkEditOpen ? (
+                  <BulkEditPanel
+                    rows={selectedRows}
+                    pending={chunkWritesDisabled}
+                    onCancel={() => setBulkEditOpen(false)}
+                    onApply={(payload) => bulkUpdateMutation.mutate({ chunkIds: selectedRows.map((row) => row.chunk_id), payload })}
+                  />
+                ) : null}
+                <BulkActionBar
+                  selectedCount={selectedRows.length}
+                  pending={chunkWritesDisabled}
+                  onClear={() => {
+                    setSelectedIds(new Set<string>());
+                    setBulkEditOpen(false);
+                  }}
+                  onEdit={() => setBulkEditOpen((open) => !open)}
+                  onRedub={() => bulkRedubMutation.mutate(selectedRows.map((row) => row.chunk_id))}
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
       </main>
 
-      <aside className="overflow-y-auto bg-background p-5">
+      <aside className="hidden overflow-y-auto bg-background p-5 lg:block">
         {selected ? (
           <ChunkDetail
             runId={id}
             row={selected}
-            pending={writesDisabled || redubMutation.isPending || updateMutation.isPending}
-            onRedub={() => redubMutation.mutate(selected.chunk_id)}
+            pending={chunkWritesDisabled}
+            speakers={speakers}
+            referenceBank={referenceBank}
             onSaveInstruction={(text) => updateMutation.mutate({ chunkId: selected.chunk_id, payload: { tts_instruct_text: text } })}
             onSaveEmotion={(label, scores) => updateMutation.mutate({ chunkId: selected.chunk_id, payload: { emotion_label: label, emotion_scores: scores } })}
+            onSaveSpeakerReference={(payload) => updateMutation.mutate({ chunkId: selected.chunk_id, payload })}
           />
         ) : (
           <div className="text-body-sm text-mute">선택된 chunk가 없습니다.</div>
         )}
       </aside>
 
+      {mobileDetailOpen && selected ? (
+        <div className="fixed inset-0 z-50 bg-black/30 lg:hidden" role="dialog" aria-modal="true" aria-label={`${selected.chunk_id} details`}>
+          <div className="ml-auto flex h-full w-full max-w-[440px] flex-col bg-background shadow-running-ring">
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-border-hairline px-5">
+              <div>
+                <p className="font-mono text-data-label uppercase text-data-label">Chunk Details</p>
+                <p className="font-display text-heading-sm text-primary">{selected.chunk_id}</p>
+              </div>
+              <button type="button" aria-label="Close chunk details" onClick={() => setMobileDetailOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-full bg-surface-soft text-primary">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <ChunkDetail
+                runId={id}
+                row={selected}
+                pending={chunkWritesDisabled}
+                speakers={speakers}
+                referenceBank={referenceBank}
+                onSaveInstruction={(text) => updateMutation.mutate({ chunkId: selected.chunk_id, payload: { tts_instruct_text: text } })}
+                onSaveEmotion={(label, scores) => updateMutation.mutate({ chunkId: selected.chunk_id, payload: { emotion_label: label, emotion_scores: scores } })}
+                onSaveSpeakerReference={(payload) => updateMutation.mutate({ chunkId: selected.chunk_id, payload })}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <TerminalPanel
         open={terminalOpen}
         toggle={() => setTerminalOpen((v) => !v)}
         connected={connected}
-        active={writesDisabled}
+        active={writesDisabled || Boolean(pendingAction)}
         lines={combinedLogLines}
       />
 
@@ -296,14 +485,268 @@ function EmptyState({ title, body, runId, action }: { title: string; body: strin
   );
 }
 
+function ChunkCardList({
+  rows,
+  selectedId,
+  selectedIds,
+  writesDisabled,
+  audioReady,
+  onSelect,
+  onOpenDetails,
+  onToggleSelect,
+  onUpdateText,
+}: {
+  rows: ChunkRow[];
+  selectedId?: string;
+  selectedIds: Set<string>;
+  writesDisabled: boolean;
+  audioReady: boolean;
+  onSelect: (row: ChunkRow) => void;
+  onOpenDetails: (row: ChunkRow) => void;
+  onToggleSelect: (row: ChunkRow) => void;
+  onUpdateText: (row: ChunkRow, text: string) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const startEdit = (row: ChunkRow) => {
+    if (writesDisabled) return;
+    onSelect(row);
+    setEditingId(row.chunk_id);
+    setDraft(row.translated_text ?? "");
+  };
+
+  const save = (row: ChunkRow) => {
+    setEditingId(null);
+    if (draft !== (row.translated_text ?? "")) onUpdateText(row, draft);
+  };
+
+  if (!rows.length) {
+    return (
+      <div className="h-full overflow-y-auto p-5 lg:hidden">
+        <div className="rounded-[1.5rem] border border-border-hairline bg-white p-5 text-body-sm text-secondary">
+          No chunks match the current filters.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto p-4 lg:hidden">
+      <div className="space-y-3">
+        {rows.map((row) => {
+          const selected = row.chunk_id === selectedId;
+          const checked = selectedIds.has(row.chunk_id);
+          const status = getChunkStatus(row);
+          const originalSrc = audioReady ? toStaticUrl(row.original_audio) : null;
+          const dubbedSrc = audioReady ? toStaticUrl(row.dubbed_audio) : null;
+          return (
+            <article
+              key={row.chunk_id}
+              className={`rounded-[1.25rem] border bg-white p-4 ${selected ? "border-primary shadow-running-ring" : "border-border-hairline"}`}
+              onClick={() => onSelect(row)}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="shrink-0 whitespace-nowrap font-mono text-code-sm text-primary">{row.chunk_id}</span>
+                    <span className="shrink-0 whitespace-nowrap rounded-full border border-border-hairline bg-surface-soft px-2 py-0.5 font-mono text-data-label uppercase text-data-label">SPK {row.speaker ?? "--"}</span>
+                    <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-mono text-data-label uppercase ${status.className}`}>{status.label}</span>
+                  </div>
+                  <p className="mt-1 font-mono text-caption-sm text-mute">{formatRange(row.start, row.end)} · {row.emotion ?? "neutral"}</p>
+                </div>
+                <input
+                  type="checkbox"
+                  name="chunk-selection"
+                  checked={checked}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={() => onToggleSelect(row)}
+                  aria-label={`${row.chunk_id} select`}
+                  className="mt-1 h-4 w-4 accent-black"
+                />
+              </div>
+
+              <div className="mt-4 grid gap-3">
+                <div>
+                  <p className="font-mono text-data-label uppercase text-data-label">Source</p>
+                  <p className="mt-1 text-body-sm text-secondary">{row.source_text ?? "No source text"}</p>
+                </div>
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <p className="font-mono text-data-label uppercase text-data-label">Translated</p>
+                    {editingId !== row.chunk_id ? (
+                      <button type="button" onClick={(event) => { event.stopPropagation(); startEdit(row); }} disabled={writesDisabled} className="text-caption-strong text-primary disabled:text-mute">Edit</button>
+                    ) : null}
+                  </div>
+                  {editingId === row.chunk_id ? (
+                    <div className="rounded-[1rem] border border-primary bg-white p-2">
+                      <textarea
+                        name={`mobile-translation-${row.chunk_id}`}
+                        aria-label={`${row.chunk_id} translated text`}
+                        value={draft}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => setDraft(event.target.value)}
+                        rows={3}
+                        className="w-full resize-none bg-transparent text-body-sm text-primary focus:outline-none"
+                      />
+                      <div className="mt-2 flex justify-end gap-2">
+                        <Button variant="secondary" size="sm" onClick={(event) => { event.stopPropagation(); setEditingId(null); }}>Cancel</Button>
+                        <Button size="sm" onClick={(event) => { event.stopPropagation(); save(row); }}>Save</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="rounded-[1rem] bg-surface-soft p-3 text-body-sm text-primary">{row.translated_text ?? "No translation yet"}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-2">
+                <MobileAudioPreview label="A" src={originalSrc} />
+                <MobileAudioPreview label="B" src={dubbedSrc} />
+              </div>
+
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <span className="font-mono text-caption-sm text-mute">
+                  {formatDuration(row.duration_original)} / {formatDuration(row.duration_dub)}
+                </span>
+                <button
+                  type="button"
+                  onClick={(event) => { event.stopPropagation(); onOpenDetails(row); }}
+                  className="inline-flex h-9 items-center rounded-full bg-primary px-4 text-body-sm-strong text-white"
+                >
+                  Details
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MobileAudioPreview({ label, src }: { label: string; src: string | null }) {
+  return (
+    <div className={`flex items-center gap-2 rounded-full bg-surface-soft px-2 py-1 ${src ? "" : "opacity-45"}`}>
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary font-mono text-data-label text-white">{label}</span>
+      <audio src={src ?? undefined} controls preload="none" aria-label={`${label} audio preview`} className="h-8 min-w-0 flex-1" />
+    </div>
+  );
+}
+
+function getChunkStatus(row: ChunkRow): { label: string; className: string } {
+  if (row.translation_blocked || row.status === "blocked") return { label: "Blocked", className: "bg-term-yellow/15 text-term-yellow" };
+  if (row.error || row.status === "error") return { label: "Error", className: "bg-error-container text-on-error-container" };
+  if (row.dub_stale || row.status === "stale") return { label: "Stale", className: "border border-term-yellow bg-term-yellow/10 text-term-yellow" };
+  if (row.status === "done") return { label: "Done", className: "bg-status-done/10 text-status-done" };
+  return { label: row.status ?? "Queued", className: "bg-surface-container text-secondary" };
+}
+
+function RepairChip({ label, count, active, onClick }: { label: string; count: number; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={count === 0}
+      className={`inline-flex h-8 items-center gap-2 rounded-full px-3 font-mono text-caption-strong disabled:opacity-40 ${active ? "bg-primary text-white" : "bg-white text-primary hover:bg-surface-container"}`}
+    >
+      <span>{label}</span>
+      <span>{count}</span>
+    </button>
+  );
+}
+
 function Select({ value, onChange, options, label }: { value: string; onChange: (next: string) => void; options: string[]; label: string }) {
+  const fieldName = `chunk-${label.toLowerCase().replace(/\s+/g, "-")}-filter`;
   return (
     <label className="inline-flex h-10 items-center gap-2 rounded-full border border-border-hairline bg-surface-soft px-4 text-body-sm text-secondary">
       <span className="font-mono text-data-label uppercase text-data-label">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="bg-transparent text-primary focus:outline-none">
+      <select name={fieldName} aria-label={`${label} filter`} value={value} onChange={(e) => onChange(e.target.value)} className="bg-transparent text-primary focus:outline-none">
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
+  );
+}
+
+function BulkActionBar({ selectedCount, pending, onClear, onEdit, onRedub }: { selectedCount: number; pending: boolean; onClear: () => void; onEdit: () => void; onRedub: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-border-hairline bg-white/95 px-3 py-3 shadow-running-ring backdrop-blur sm:px-4">
+      <div className="min-w-0">
+        <p className="font-mono text-data-label uppercase text-data-label">Bulk selection</p>
+        <p className="text-body-sm-strong text-primary">{selectedCount}개 chunk 선택됨</p>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <Button variant="secondary" size="sm" onClick={onClear} disabled={pending}>선택 해제</Button>
+        <Button variant="secondary" size="sm" onClick={onEdit} disabled={pending}>선택 항목 편집</Button>
+        <Button size="sm" onClick={onRedub} disabled={pending}><RefreshCcw className="mr-2 h-4 w-4" />선택 항목 Redub</Button>
+      </div>
+    </div>
+  );
+}
+
+function BulkEditPanel({ rows, pending, onCancel, onApply }: { rows: ChunkRow[]; pending: boolean; onCancel: () => void; onApply: (payload: PatchChunkPayload) => void }) {
+  const first = rows[0];
+  const [applyText, setApplyText] = useState(false);
+  const [translatedText, setTranslatedText] = useState(first?.translated_text ?? "");
+  const [applyInstruction, setApplyInstruction] = useState(false);
+  const [instructionText, setInstructionText] = useState(stripEndOfPrompt(first?.tts_instruct_text));
+  const [applyEmotion, setApplyEmotion] = useState(false);
+  const [emotionDraft, setEmotionDraft] = useState<{ label: string; scores: Record<string, number> } | null>(null);
+  const canApply = applyText || applyInstruction || applyEmotion;
+
+  useEffect(() => {
+    setTranslatedText(first?.translated_text ?? "");
+    setInstructionText(stripEndOfPrompt(first?.tts_instruct_text));
+    setEmotionDraft(null);
+  }, [first?.chunk_id, first?.translated_text, first?.tts_instruct_text]);
+
+  const submit = () => {
+    const payload: PatchChunkPayload = {};
+    if (applyText) payload.translated_text = translatedText;
+    if (applyInstruction) payload.tts_instruct_text = ensureEndOfPrompt(instructionText);
+    if (applyEmotion) {
+      const fallbackLabel = first?.emotion ?? "neutral";
+      const fallbackScores = first?.emotion_scores ?? { [fallbackLabel]: 1 };
+      const emotion = emotionDraft ?? { label: fallbackLabel, scores: fallbackScores };
+      payload.emotion_label = emotion.label;
+      payload.emotion_scores = emotion.scores;
+    }
+    onApply(payload);
+  };
+
+  return (
+    <Card className="mb-3 max-h-[min(70vh,560px)] overflow-y-auto rounded-[1.5rem] border border-primary/20 bg-primary/5 p-4 shadow-running-ring">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <p className="font-mono text-data-label uppercase text-primary">Bulk edit</p>
+          <h2 className="mt-1 font-display text-heading-sm text-primary">선택한 {rows.length}개 chunk에 같은 값을 적용</h2>
+          <p className="mt-1 text-caption-sm text-secondary">켜 둔 필드만 저장합니다. 번역문은 같은 문장이 모든 선택 chunk에 들어갑니다.</p>
+        </div>
+        <button type="button" onClick={onCancel} className="rounded-full p-1 text-mute hover:text-primary"><X className="h-4 w-4" /></button>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-3">
+        <label className="rounded-[1.25rem] bg-surface-container-lowest p-3">
+          <label className="flex items-center gap-2 font-mono text-data-label uppercase text-data-label"><input type="checkbox" name="bulk-apply-translated-text" checked={applyText} onChange={(e) => setApplyText(e.target.checked)} className="h-4 w-4 accent-black" />translated_text</label>
+          <textarea value={translatedText} onChange={(e) => setTranslatedText(e.target.value)} disabled={!applyText || pending} rows={5} className="mt-3 w-full rounded-[1rem] border border-border-hairline bg-white p-3 text-body-sm text-primary focus:outline-none" />
+          {applyText ? <p className="mt-2 text-caption-sm text-term-yellow">여러 청크에 같은 번역문을 적용합니다.</p> : null}
+        </label>
+        <label className="rounded-[1.25rem] bg-surface-container-lowest p-3">
+          <label className="flex items-center gap-2 font-mono text-data-label uppercase text-data-label"><input type="checkbox" name="bulk-apply-tts-instruction" checked={applyInstruction} onChange={(e) => setApplyInstruction(e.target.checked)} className="h-4 w-4 accent-black" />tts_instruct_text</label>
+          <textarea value={instructionText} onChange={(e) => setInstructionText(stripTokenOnly(e.target.value))} disabled={!applyInstruction || pending} rows={5} placeholder="Please say it ..." className="mt-3 w-full rounded-[1rem] border border-border-hairline bg-white p-3 font-mono text-code-sm text-primary focus:outline-none" />
+          {applyInstruction && hasNonLatinScript(instructionText) ? <p className="mt-2 text-caption-sm text-term-yellow">한국어/한자가 포함돼 있습니다. 가능하면 영어 directive로 바꿔 주세요.</p> : null}
+        </label>
+        <div className="rounded-[1.25rem] bg-surface-container-lowest p-3">
+          <label className="flex items-center gap-2 font-mono text-data-label uppercase text-data-label"><input type="checkbox" name="bulk-apply-emotion" checked={applyEmotion} onChange={(e) => setApplyEmotion(e.target.checked)} className="h-4 w-4 accent-black" />emotion vector</label>
+          <div className={applyEmotion ? "mt-3" : "pointer-events-none mt-3 opacity-45"}>
+            <EmotionEqualizer scores={first?.emotion_scores} label={first?.emotion} pending={!applyEmotion || pending} onCancel={() => setApplyEmotion(false)} onChange={setEmotionDraft} onSave={setEmotionDraft} />
+          </div>
+        </div>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" size="sm" onClick={onCancel} disabled={pending}>Cancel</Button>
+        <Button size="sm" onClick={submit} disabled={!canApply || pending}>{pending ? "Saving" : "Apply to selected"}</Button>
+      </div>
+    </Card>
   );
 }
 
@@ -311,16 +754,20 @@ function ChunkDetail({
   runId,
   row,
   pending,
-  onRedub,
+  speakers,
+  referenceBank,
   onSaveInstruction,
   onSaveEmotion,
+  onSaveSpeakerReference,
 }: {
   runId: string;
   row: ChunkRow;
   pending: boolean;
-  onRedub: () => void;
+  speakers: string[];
+  referenceBank: Record<string, ReferenceCandidate[]>;
   onSaveInstruction: (text: string) => void;
   onSaveEmotion: (label: string, scores: Record<string, number>) => void;
+  onSaveSpeakerReference: (payload: PatchChunkPayload) => void;
 }) {
   const stale = row.dub_stale || row.status === "stale";
   const blocked = Boolean(row.translation_blocked) || row.status === "blocked";
@@ -333,6 +780,9 @@ function ChunkDetail({
   const [eqDraft, setEqDraft] = useState<{ label: string; scores: Record<string, number> } | null>(null);
   // Preview 결과 — 사용자가 "Use as manual" 누르기 전까지 비저장 상태
   const [preview, setPreview] = useState<{ instruction: string; source: "llm" | "fallback" } | null>(null);
+  const [speakerDraft, setSpeakerDraft] = useState(row.speaker ?? "");
+  const [referenceModeDraft, setReferenceModeDraft] = useState(normalizeReferenceMode(row.reference_override_mode));
+  const [referenceChunkDraft, setReferenceChunkDraft] = useState(row.reference_override_chunk_id ?? "");
 
   const previewMutation = useMutation({
     mutationFn: (payload: { emotion_label?: string; emotion_scores?: Record<string, number> }) =>
@@ -347,8 +797,11 @@ function ChunkDetail({
     setDraftInstruction(stripEndOfPrompt(row.tts_instruct_text));
     setEqDraft(null);
     setPreview(null);
+    setSpeakerDraft(row.speaker ?? "");
+    setReferenceModeDraft(normalizeReferenceMode(row.reference_override_mode));
+    setReferenceChunkDraft(row.reference_override_chunk_id ?? "");
     previewMutation.reset();
-  }, [row.chunk_id, row.tts_instruct_text]);
+  }, [row.chunk_id, row.tts_instruct_text, row.speaker, row.reference_override_mode, row.reference_override_chunk_id]);
 
   const triggerPreview = () => {
     setPreview(null);
@@ -363,6 +816,19 @@ function ChunkDetail({
     setDraftInstruction(stripEndOfPrompt(preview.instruction));
     setInstructionEdit(true);
     setPreview(null);
+  };
+  const referenceCandidates = referenceBank[speakerDraft] ?? [];
+  const acceptedCandidates = referenceCandidates.filter((candidate) => candidate.accepted);
+  const selectedReferenceCandidate = referenceCandidates.find((candidate) => candidate.chunk_id === referenceChunkDraft);
+  const speakerReferenceDirty =
+    speakerDraft !== (row.speaker ?? "") ||
+    referenceModeDraft !== normalizeReferenceMode(row.reference_override_mode) ||
+    referenceChunkDraft !== (row.reference_override_chunk_id ?? "");
+  const saveSpeakerReference = () => {
+    const payload: PatchChunkPayload = { speaker: speakerDraft };
+    payload.reference_mode = referenceModeDraft;
+    payload.reference_chunk_id = referenceModeDraft === "self" ? null : referenceChunkDraft || null;
+    onSaveSpeakerReference(payload);
   };
 
   return (
@@ -388,7 +854,6 @@ function ChunkDetail({
         <Card className="rounded-[2rem] p-5">
           <div className={`inline-flex rounded-full px-3 py-1 text-caption-strong ${stale ? "bg-term-yellow/10 text-term-yellow" : "bg-status-done/10 text-status-done"}`}>{stale ? "DUB STALE" : "DUB READY"}</div>
           <p className="mt-3 text-body-sm text-secondary">{stale ? "번역·감정·프롬프트 변경으로 chunk 단위 redub가 필요합니다." : "현재 chunk의 더빙 산출물이 최신 상태입니다."}</p>
-          <Button onClick={onRedub} disabled={pending} className="mt-5 w-full"><RefreshCcw className="mr-2 h-4 w-4" />Redub this chunk</Button>
         </Card>
       )}
 
@@ -473,10 +938,104 @@ function ChunkDetail({
       </Card>
 
       <Card className="rounded-[2rem] p-5">
-        <div className="flex items-center justify-between">
-          <p className="font-mono text-data-label uppercase text-data-label">Speaker Assignment</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="font-mono text-data-label uppercase text-data-label">Speaker & Reference</p>
+          {speakerReferenceDirty ? <span className="rounded-full bg-term-yellow/10 px-3 py-1 text-caption-strong text-term-yellow">UNSAVED</span> : null}
         </div>
-        <div className="mt-3 rounded-full bg-surface-soft px-4 py-3 font-mono text-code-sm text-primary">{row.speaker ?? "SPK_00"}</div>
+        <div className="mt-4 grid gap-3">
+          <label className="grid gap-2">
+            <span className="font-mono text-data-label uppercase text-data-label">speaker</span>
+            <select
+              name="speaker-reference"
+              aria-label="Speaker reference"
+              value={speakerDraft}
+              onChange={(event) => {
+                const nextSpeaker = event.target.value;
+                setSpeakerDraft(nextSpeaker);
+                const nextCandidates = referenceBank[nextSpeaker] ?? [];
+                if (referenceModeDraft !== "self" && !nextCandidates.some((candidate) => candidate.chunk_id === referenceChunkDraft)) {
+                  setReferenceChunkDraft(nextCandidates.find((candidate) => candidate.accepted)?.chunk_id ?? nextCandidates[0]?.chunk_id ?? "");
+                }
+              }}
+              disabled={pending}
+              className="h-10 rounded-full border border-border-hairline bg-white px-4 font-mono text-code-sm text-primary focus:outline-none disabled:opacity-60"
+            >
+              {unique([speakerDraft, ...speakers].filter(Boolean)).map((speaker) => <option key={speaker} value={speaker}>{speaker}</option>)}
+            </select>
+          </label>
+          <div>
+            <p className="font-mono text-data-label uppercase text-data-label">reference source</p>
+            <p className="mt-1 font-mono text-caption-sm text-mute">
+              current · {row.reference_mode ?? "self"} {row.reference_chunk_id ? `· ${row.reference_chunk_id}` : ""}
+            </p>
+            <div className="mt-2 grid grid-cols-2 rounded-full border border-border-hairline bg-surface-soft p-1">
+              {(["self", "speaker_bank"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    setReferenceModeDraft(mode);
+                    if (mode === "self") setReferenceChunkDraft("");
+                    else if (!referenceCandidates.some((candidate) => candidate.chunk_id === referenceChunkDraft)) {
+                      setReferenceChunkDraft(acceptedCandidates[0]?.chunk_id ?? referenceCandidates[0]?.chunk_id ?? "");
+                    }
+                  }}
+                  disabled={pending}
+                  className={`h-8 rounded-full px-3 text-caption-strong ${referenceModeDraft === mode ? "bg-primary text-white" : "text-secondary hover:bg-surface-container"}`}
+                >
+                  {mode === "self" ? "Self" : "Speaker bank"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {referenceModeDraft === "speaker_bank" ? (
+            <div className="rounded-[1.5rem] border border-border-hairline bg-surface-soft p-3">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="font-mono text-data-label uppercase text-data-label">bank candidates</p>
+                <span className="font-mono text-caption-sm text-mute">{acceptedCandidates.length}/{referenceCandidates.length} accepted</span>
+              </div>
+              {referenceCandidates.length ? (
+                <div className="space-y-2">
+                  {referenceCandidates.slice(0, 8).map((candidate) => (
+                    <ReferenceCandidateRow
+                      key={candidate.chunk_id}
+                      candidate={candidate}
+                      selected={candidate.chunk_id === referenceChunkDraft}
+                      pending={pending}
+                      onSelect={() => setReferenceChunkDraft(candidate.chunk_id)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-[1rem] bg-white p-3 text-caption-sm text-secondary">이 화자의 reference 후보가 아직 없습니다.</p>
+              )}
+            </div>
+          ) : (
+            <p className="rounded-[1.5rem] bg-surface-soft p-3 text-caption-sm text-secondary">현재 청크 오디오를 prompt reference로 사용합니다.</p>
+          )}
+          {selectedReferenceCandidate ? (
+            <p className="font-mono text-caption-sm text-mute">
+              selected · {selectedReferenceCandidate.chunk_id} · {formatDuration(selectedReferenceCandidate.duration)}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSpeakerDraft(row.speaker ?? "");
+                setReferenceModeDraft(normalizeReferenceMode(row.reference_override_mode));
+                setReferenceChunkDraft(row.reference_override_chunk_id ?? "");
+              }}
+              disabled={pending || !speakerReferenceDirty}
+            >
+              Reset
+            </Button>
+            <Button size="sm" onClick={saveSpeakerReference} disabled={pending || !speakerReferenceDirty || !speakerDraft}>
+              Save Assignment
+            </Button>
+          </div>
+        </div>
       </Card>
 
       <Card className="rounded-[2rem] p-5">
@@ -527,6 +1086,57 @@ function ChunkDetail({
   );
 }
 
+function ReferenceCandidateRow({
+  candidate,
+  selected,
+  pending,
+  onSelect,
+}: {
+  candidate: ReferenceCandidate;
+  selected: boolean;
+  pending: boolean;
+  onSelect: () => void;
+}) {
+  const src = toStaticUrl(candidate.wav);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      disabled={pending}
+      className={`w-full rounded-[1rem] border p-3 text-left ${selected ? "border-primary bg-white" : "border-border-hairline bg-white/70 hover:bg-white"}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-code-sm text-primary">{candidate.chunk_id}</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${candidate.accepted ? "bg-status-done/10 text-status-done" : "bg-term-yellow/10 text-term-yellow"}`}>
+              {candidate.accepted ? "OK" : "CHECK"}
+            </span>
+          </div>
+          <p className="mt-1 line-clamp-2 text-caption-sm text-secondary">{candidate.text_src || "No transcript"}</p>
+          <p className="mt-1 font-mono text-caption-sm text-mute">
+            {formatRange(candidate.start, candidate.end)} · {formatDuration(candidate.duration)}
+            {candidate.score != null ? ` · score ${candidate.score.toFixed(2)}` : ""}
+          </p>
+          {candidate.critical_flags.length ? (
+            <p className="mt-1 font-mono text-caption-sm text-term-yellow">{candidate.critical_flags.join(", ")}</p>
+          ) : null}
+        </div>
+        <span className={`mt-1 h-3 w-3 shrink-0 rounded-full border ${selected ? "border-primary bg-primary" : "border-border-hairline bg-white"}`} />
+      </div>
+      {src ? (
+        <audio
+          src={src}
+          controls
+          preload="none"
+          onClick={(event) => event.stopPropagation()}
+          className="mt-2 h-8 w-full"
+        />
+      ) : null}
+    </button>
+  );
+}
+
 function TerminalPanel({
   open,
   toggle,
@@ -541,7 +1151,7 @@ function TerminalPanel({
   lines: string[];
 }) {
   return (
-    <footer className="col-span-2 flex min-h-0 flex-col border-t border-white/10 bg-[#080808] text-white">
+    <footer className="col-span-1 flex min-h-0 flex-col border-t border-white/10 bg-[#080808] text-white lg:col-span-2">
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-white/10 bg-[#151515] px-5">
         <div className="flex items-center gap-3">
           <span className="font-mono text-data-label uppercase text-white/60">Pipeline Logs</span>
@@ -621,7 +1231,7 @@ function filterRows(rows: ChunkRow[], speaker: string, emotion: string, search: 
   return rows.filter((row) => {
     if (speaker !== "all" && row.speaker !== speaker) return false;
     if (emotion !== "all" && row.emotion !== emotion) return false;
-    if (problemOnly && !row.dub_stale && row.status !== "stale" && row.status !== "error" && !row.error) return false;
+    if (problemOnly && !row.dub_stale && row.status !== "stale" && row.status !== "error" && !row.error && !row.translation_blocked && row.status !== "blocked" && !(row.reference_mode !== "self" && !row.reference_chunk_id)) return false;
     if (!query) return true;
     return `${row.source_text ?? ""} ${row.translated_text ?? ""} ${row.chunk_id}`.toLowerCase().includes(query);
   });
@@ -629,6 +1239,23 @@ function filterRows(rows: ChunkRow[], speaker: string, emotion: string, search: 
 
 function unique(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function normalizeReferenceMode(value: string | null | undefined): "self" | "speaker_bank" {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (["speaker_bank", "speaker_best", "bank", "best"].includes(normalized)) return "speaker_bank";
+  return "self";
+}
+
+function formatRange(start: number | null | undefined, end: number | null | undefined): string {
+  if (start == null || end == null) return "--:-- → --:--";
+  return `${formatClock(start)} → ${formatClock(end)}`;
+}
+
+function formatClock(value: number): string {
+  const min = Math.floor(value / 60);
+  const sec = Math.floor(value % 60).toString().padStart(2, "0");
+  return `${min}:${sec}`;
 }
 
 function formatDuration(value: number | null | undefined): string {

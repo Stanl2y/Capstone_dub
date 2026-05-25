@@ -41,6 +41,16 @@ services:
     ipc: host
     shm_size: "8gb"
 
+  # pyannote.audio 4.0 community-1 전용 — diarizer의 pyannote 3.1.1과 격리. CPU(짧은 클립).
+  pyannote:
+    <<: *service-defaults
+    image: movie-dubbing/pyannote:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pyannote
+    env_file:
+      - .env
+
   speaker:
     <<: *service-defaults
     image: movie-dubbing/speaker:local
@@ -48,6 +58,17 @@ services:
       context: .
       dockerfile: docker/Dockerfile.gpu
       target: speaker
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  vibevoice-asr:
+    <<: *service-defaults
+    image: movie-dubbing/vibevoice-asr:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+      target: vibevoice-asr
     gpus: all
     ipc: host
     shm_size: "8gb"
@@ -67,7 +88,7 @@ services:
     ipc: host
     shm_size: "8gb"
 
-  # webapp 백엔드 — FastAPI. 호스트 docker socket 을 통해 위 4개 GPU 서비스로 docker compose exec.
+  # webapp 백엔드 — FastAPI. 호스트 docker socket 을 통해 위 파이프라인 서비스(controller + separator/diarizer/speaker/tts-cosyvoice) 로 docker compose exec.
   webapp-backend:
     image: movie-dubbing/webapp-backend:local
     build:

@@ -102,9 +102,28 @@ class ChunkRow(BaseModel):
     emotion_scores: Optional[dict[str, float]] = None
     tts_instruct_text: Optional[str] = None
     tts_instruct_source: Optional[str] = None  # llm | fallback | manual
+    reference_mode: Optional[str] = None
+    reference_chunk_id: Optional[str] = None
+    reference_audio: Optional[str] = None
+    reference_override_mode: Optional[str] = None
+    reference_override_chunk_id: Optional[str] = None
     # 번역기가 content_filter 등으로 차단해 본문이 비어 있는 청크. UI 가 수동 입력을 유도하기 위해 노출.
     translation_blocked: bool = False
     translation_blocked_reason: Optional[str] = None
+
+
+class ReferenceCandidate(BaseModel):
+    chunk_id: str
+    speaker: Optional[str] = None
+    start: Optional[float] = None
+    end: Optional[float] = None
+    duration: Optional[float] = None
+    text_src: Optional[str] = None
+    wav: Optional[str] = None
+    accepted: bool = False
+    score: Optional[float] = None
+    warnings: list[str] = Field(default_factory=list)
+    critical_flags: list[str] = Field(default_factory=list)
 
 
 class PreviewInstructionRequest(BaseModel):
@@ -125,12 +144,26 @@ class PatchChunkPayload(BaseModel):
     speaker: Optional[str] = None
     emotion: Optional[str] = None
     translated_text: Optional[str] = None
+    reference_mode: Optional[str] = None
+    reference_chunk_id: Optional[str] = None
     # TTS 프롬프트 직접 편집 — 저장 시 source=manual 마킹, dub_stale=true
     tts_instruct_text: Optional[str] = None
     # 감정 라벨 직접 편집 (max-score 기반 자동 갱신과 무관하게 사용자 지정 가능)
     emotion_label: Optional[str] = None
     # 9개 감정 score (0~1) — 이퀄라이저 편집 결과
     emotion_scores: Optional[dict[str, float]] = None
+
+
+class PatchChunkUpdate(PatchChunkPayload):
+    chunk_id: str
+
+
+class BulkPatchChunksRequest(BaseModel):
+    updates: list[PatchChunkUpdate] = Field(default_factory=list)
+
+
+class BulkRedubChunksRequest(BaseModel):
+    chunk_ids: list[str] = Field(default_factory=list)
 
 
 class StepArtifact(BaseModel):
@@ -201,6 +234,8 @@ ActivityKind = Literal[
     "chunk_text_edit",
     "chunk_instruction_edit",
     "chunk_emotion_edit",
+    "chunk_speaker_edit",
+    "chunk_reference_edit",
     "chunk_redub",
     "step_rerun",
 ]

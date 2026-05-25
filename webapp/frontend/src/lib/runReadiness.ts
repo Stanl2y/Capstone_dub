@@ -1,8 +1,21 @@
 // Run 상태에 따라 사용 가능한 화면과 다음 행동을 판단하는 유틸
 import type { RunRecord, StepName, StepRecord } from "@/api/client";
 
+export function normalizeFailedTailSteps(steps: StepRecord[]): StepRecord[] {
+  const firstFailedIndex = steps.findIndex((step) => step.state === "failed");
+  if (firstFailedIndex < 0) return steps;
+
+  let changed = false;
+  const normalized = steps.map((step, index) => {
+    if (index <= firstFailedIndex || step.state === "pending") return step;
+    changed = true;
+    return { name: step.name, state: "pending" as const };
+  });
+  return changed ? normalized : steps;
+}
+
 export function completedStepCount(steps: StepRecord[]): number {
-  return steps.filter((step) => step.state === "done" || step.state === "skipped").length;
+  return normalizeFailedTailSteps(steps).filter((step) => step.state === "done" || step.state === "skipped").length;
 }
 
 export function progressPercent(steps: StepRecord[]): number {
@@ -11,7 +24,7 @@ export function progressPercent(steps: StepRecord[]): number {
 }
 
 export function stepRecord(run: RunRecord | null | undefined, name: StepName): StepRecord | undefined {
-  return run?.steps.find((step) => step.name === name);
+  return normalizeFailedTailSteps(run?.steps ?? []).find((step) => step.name === name);
 }
 
 export function stepHasStarted(run: RunRecord | null | undefined, name: StepName): boolean {
@@ -25,7 +38,7 @@ export function stepIsDone(run: RunRecord | null | undefined, name: StepName): b
 }
 
 export function pipelineHasStarted(run: RunRecord | null | undefined): boolean {
-  return Boolean(run?.steps.some((step) => step.state !== "pending"));
+  return Boolean(normalizeFailedTailSteps(run?.steps ?? []).some((step) => step.state !== "pending"));
 }
 
 export function canInspectChunks(run: RunRecord | null | undefined): boolean {
@@ -47,7 +60,8 @@ export function canViewStepArtifacts(run: RunRecord | null | undefined, step: St
 }
 
 export function deriveActiveStep(steps: StepRecord[]): StepName {
-  return steps.find((step) => step.state === "running")?.name ?? steps.find((step) => step.state === "failed")?.name ?? steps.find((step) => step.state === "pending")?.name ?? steps[steps.length - 1].name;
+  const normalized = normalizeFailedTailSteps(steps);
+  return normalized.find((step) => step.state === "running")?.name ?? normalized.find((step) => step.state === "failed")?.name ?? normalized.find((step) => step.state === "pending")?.name ?? normalized[normalized.length - 1].name;
 }
 
 export function runStageMessage(run: RunRecord | null | undefined): string {

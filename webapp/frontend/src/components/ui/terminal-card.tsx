@@ -1,4 +1,4 @@
-// design.md terminal-card 패턴 — 진행 로그/15단계 표시에 차용
+// design.md terminal-card 패턴 — 진행 로그/16단계 표시에 차용
 import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/cn";
 

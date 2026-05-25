@@ -56,8 +56,25 @@ def _build_clustering_override(
     ahc_criterion: str | None = None,
     seg_duration: float | None = None,
     segmentation_step: float | None = None,
+    batch_size: int | None = None,
+    apply_median_filtering: bool | None = None,
 ) -> dict | None:
-    if max_speakers is None and min_speakers is None and ahc_threshold is None and fa is None and fb is None and lda_dim is None and max_iters is None and method is None and min_cluster_size is None and ahc_criterion is None:
+    if (
+        max_speakers is None
+        and min_speakers is None
+        and ahc_threshold is None
+        and fa is None
+        and fb is None
+        and lda_dim is None
+        and max_iters is None
+        and method is None
+        and min_cluster_size is None
+        and ahc_criterion is None
+        and seg_duration is None
+        and segmentation_step is None
+        and batch_size is None
+        and apply_median_filtering is None
+    ):
         return None
     try:
         import toml
@@ -87,10 +104,16 @@ def _build_clustering_override(
         clustering_args["method"] = str(method)
     if min_cluster_size is not None:
         clustering_args["min_cluster_size"] = int(min_cluster_size)
+    if ahc_criterion is not None:
+        clustering_args["ahc_criterion"] = str(ahc_criterion)
     if seg_duration is not None:
         inference_args["seg_duration"] = float(seg_duration)
     if segmentation_step is not None:
         inference_args["segmentation_step"] = float(segmentation_step)
+    if batch_size is not None:
+        inference_args["batch_size"] = int(batch_size)
+    if apply_median_filtering is not None:
+        inference_args["apply_median_filtering"] = bool(apply_median_filtering)
     return {
         "inference": {"args": inference_args},
         "clustering": {"args": clustering_args},
@@ -107,6 +130,7 @@ def diarize_audio(
     max_speakers: int | None = None,
     min_speakers: int | None = None,
     ahc_threshold: float | None = None,
+    ahc_criterion: str | None = None,
     fa: float | None = None,
     fb: float | None = None,
     lda_dim: int | None = None,
@@ -115,6 +139,8 @@ def diarize_audio(
     min_cluster_size: int | None = None,
     seg_duration: float | None = None,
     segmentation_step: float | None = None,
+    batch_size: int | None = None,
+    apply_median_filtering: bool | None = None,
 ) -> Path:
     try:
         import torch
@@ -140,6 +166,7 @@ def diarize_audio(
         max_speakers=max_speakers,
         min_speakers=min_speakers,
         ahc_threshold=ahc_threshold,
+        ahc_criterion=ahc_criterion,
         fa=fa,
         fb=fb,
         lda_dim=lda_dim,
@@ -148,11 +175,18 @@ def diarize_audio(
         min_cluster_size=min_cluster_size,
         seg_duration=seg_duration,
         segmentation_step=segmentation_step,
+        batch_size=batch_size,
+        apply_median_filtering=apply_median_filtering,
     )
     if config_parse is not None:
+        inference_log_keys = {"seg_duration", "segmentation_step", "batch_size", "apply_median_filtering"}
+        clustering_log_keys = {"max_speakers", "min_speakers", "ahc_threshold", "ahc_criterion", "Fa", "Fb", "lda_dim", "max_iters", "method", "min_cluster_size"}
         logger.info(
-            "Overriding DiariZen clustering: %s",
-            {k: v for k, v in config_parse["clustering"]["args"].items() if k in {"max_speakers", "min_speakers", "ahc_threshold", "Fa", "Fb"}},
+            "Overriding DiariZen config: %s",
+            {
+                "inference": {k: v for k, v in config_parse["inference"]["args"].items() if k in inference_log_keys},
+                "clustering": {k: v for k, v in config_parse["clustering"]["args"].items() if k in clustering_log_keys},
+            },
         )
 
     pipeline = DiariZenPipeline(
@@ -177,6 +211,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-speakers", type=int)
     parser.add_argument("--min-speakers", type=int)
     parser.add_argument("--ahc-threshold", type=float)
+    parser.add_argument("--ahc-criterion")
     parser.add_argument("--fa", type=float)
     parser.add_argument("--fb", type=float)
     parser.add_argument("--lda-dim", type=int)
@@ -185,6 +220,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-cluster-size", type=int)
     parser.add_argument("--seg-duration", type=float)
     parser.add_argument("--segmentation-step", type=float)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--apply-median-filtering", action=argparse.BooleanOptionalAction, default=None)
     return parser
 
 
@@ -199,6 +236,7 @@ def main() -> None:
         max_speakers=args.max_speakers,
         min_speakers=args.min_speakers,
         ahc_threshold=args.ahc_threshold,
+        ahc_criterion=args.ahc_criterion,
         fa=args.fa,
         fb=args.fb,
         lda_dim=args.lda_dim,
@@ -207,6 +245,8 @@ def main() -> None:
         min_cluster_size=args.min_cluster_size,
         seg_duration=args.seg_duration,
         segmentation_step=args.segmentation_step,
+        batch_size=args.batch_size,
+        apply_median_filtering=args.apply_median_filtering,
     )
 
 

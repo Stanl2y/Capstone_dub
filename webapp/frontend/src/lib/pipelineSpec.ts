@@ -1,4 +1,4 @@
-// 15단계 더빙 파이프라인의 화면 표시 메타데이터
+// 16단계 더빙 파이프라인의 화면 표시 메타데이터
 import { PIPELINE_STEPS, type StepName } from "@/api/client";
 
 export interface StepMeta {
@@ -28,25 +28,33 @@ export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
   separate_audio: {
     label: "Separate Audio",
     shortLabel: "separate_audio",
-    description: "Demucs로 보컬과 배경음을 분리합니다.",
-    service: "demucs",
+    description: "BS-RoFormer + MDX23C-InstVoc_HQ 앙상블로 보컬과 배경음을 분리합니다.",
+    service: "separator",
     inputs: ["raw.wav"],
-    outputs: ["vocals.wav", "no_vocals.wav"],
+    outputs: ["dialogue.wav", "bgm.wav"],
+  },
+  redirect_nonspeech: {
+    label: "Redirect Nonspeech",
+    shortLabel: "redirect_nonspeech",
+    description: "분리된 무음·비발화 구간을 배경 트랙으로 되돌려 후속 화자 처리 입력을 정리합니다.",
+    service: "controller",
+    inputs: ["dialogue.wav", "bgm.wav"],
+    outputs: ["dialogue.wav", "bgm.wav"],
   },
   diarize: {
     label: "Diarize",
     shortLabel: "diarize",
     description: "화자 구간을 추정하고 RTTM 결과를 만듭니다.",
-    service: "speaker",
-    inputs: ["vocals.wav"],
-    outputs: ["speaker.rttm"],
+    service: "diarizer",
+    inputs: ["dialogue.wav"],
+    outputs: ["diarization.rttm"],
   },
   rttm_to_json: {
     label: "RTTM to JSON",
     shortLabel: "rttm_to_json",
     description: "RTTM을 파이프라인에서 쓰는 JSON chunk 구조로 변환합니다.",
     service: "controller",
-    inputs: ["speaker.rttm"],
+    inputs: ["diarization.rttm"],
     outputs: ["chunks.json"],
   },
   merge_chunks: {
@@ -62,7 +70,7 @@ export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
     shortLabel: "cut_chunks",
     description: "각 발화 구간의 원본 오디오 조각을 저장합니다.",
     service: "controller",
-    inputs: ["merged.json", "vocals.wav"],
+    inputs: ["merged.json", "dialogue.wav"],
     outputs: ["chunk_*.wav"],
   },
   extract_emotion: {
@@ -126,7 +134,7 @@ export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
     shortLabel: "compose_audio",
     description: "합성 음성을 배경음과 맞춰 최종 오디오로 합성합니다.",
     service: "controller",
-    inputs: ["chunk_*_dub.wav", "no_vocals.wav"],
+    inputs: ["chunk_*_dub.wav", "bgm.wav"],
     outputs: ["dubbed.wav"],
   },
   mux: {
@@ -140,7 +148,7 @@ export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
 };
 
 export const PIPELINE_PHASES: PipelinePhase[] = [
-  { id: "audio", label: "Audio Prep", steps: ["extract_audio", "separate_audio"] },
+  { id: "audio", label: "Audio Prep", steps: ["extract_audio", "separate_audio", "redirect_nonspeech"] },
   { id: "diarization", label: "Diarization & ASR", steps: ["diarize", "rttm_to_json", "merge_chunks", "cut_chunks", "extract_emotion"] },
   { id: "text", label: "Text Processing", steps: ["run_asr", "translate", "build_timeline"] },
   { id: "synthesis", label: "Synthesis", steps: ["generate_tts_instructions", "run_tts", "validate_tts", "compose_audio", "mux"] },

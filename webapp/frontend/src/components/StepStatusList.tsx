@@ -1,4 +1,4 @@
-// Run Detail 좌측 레일에서 15단계 상태와 active step을 표시
+// Run Detail 좌측 레일에서 16단계 상태와 active step을 표시
 import type { ReactNode } from "react";
 import type { StepName, StepRecord } from "@/api/client";
 import { Check, Circle, Loader2, X } from "lucide-react";

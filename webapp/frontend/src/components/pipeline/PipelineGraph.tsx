@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Check, Circle, Loader2, Minus, X } from "lucide-react";
 import type { StepName, StepRecord, StepState } from "@/api/client";
 import { PIPELINE_PHASES, getStepMeta } from "@/lib/pipelineSpec";
+import { normalizeFailedTailSteps } from "@/lib/runReadiness";
 import { cn } from "@/lib/cn";
 
 interface PipelineGraphProps {
@@ -19,7 +20,8 @@ const stateIcon: Record<StepState, typeof Circle> = {
 };
 
 export function PipelineGraph({ steps, runId }: PipelineGraphProps) {
-  const stepMap = new Map<StepName, StepRecord>(steps.map((step) => [step.name, step]));
+  const visibleSteps = normalizeFailedTailSteps(steps);
+  const stepMap = new Map<StepName, StepRecord>(visibleSteps.map((step) => [step.name, step]));
 
   return (
     <div className="relative overflow-x-auto pb-8 pt-6">

@@ -95,8 +95,27 @@ export interface ChunkRow {
   emotion_scores?: Record<string, number> | null;
   tts_instruct_text?: string | null;
   tts_instruct_source?: string | null;
+  reference_mode?: string | null;
+  reference_chunk_id?: string | null;
+  reference_audio?: string | null;
+  reference_override_mode?: string | null;
+  reference_override_chunk_id?: string | null;
   translation_blocked?: boolean;
   translation_blocked_reason?: string | null;
+}
+
+export interface ReferenceCandidate {
+  chunk_id: string;
+  speaker?: string | null;
+  start?: number | null;
+  end?: number | null;
+  duration?: number | null;
+  text_src?: string | null;
+  wav?: string | null;
+  accepted: boolean;
+  score?: number | null;
+  warnings: string[];
+  critical_flags: string[];
 }
 
 export interface PreviewInstructionRequest {
@@ -114,9 +133,23 @@ export interface PatchChunkPayload {
   speaker?: string;
   emotion?: string;
   translated_text?: string;
+  reference_mode?: string;
+  reference_chunk_id?: string | null;
   tts_instruct_text?: string;
   emotion_label?: string;
   emotion_scores?: Record<string, number>;
+}
+
+export interface PatchChunkUpdate extends PatchChunkPayload {
+  chunk_id: string;
+}
+
+export interface BulkPatchChunksRequest {
+  updates: PatchChunkUpdate[];
+}
+
+export interface BulkRedubChunksRequest {
+  chunk_ids: string[];
 }
 
 export interface StepArtifact {
@@ -147,6 +180,8 @@ export type ActivityKind =
   | "chunk_text_edit"
   | "chunk_instruction_edit"
   | "chunk_emotion_edit"
+  | "chunk_speaker_edit"
+  | "chunk_reference_edit"
   | "chunk_redub"
   | "step_rerun";
 
@@ -232,8 +267,11 @@ export const api = {
   resumeRun: (id: string) => request<RunRecord>("POST", `/api/runs/${id}/resume`),
   listChunks: (id: string) => request<ChunkRow[]>("GET", `/api/runs/${id}/chunks`),
   getChunk: (id: string, chunkId: string) => request<ChunkRow>("GET", `/api/runs/${id}/chunks/${chunkId}`),
+  getSpeakerReferenceBank: (id: string) => request<Record<string, ReferenceCandidate[]>>("GET", `/api/runs/${id}/speaker-reference-bank`),
   patchChunk: (id: string, chunkId: string, payload: PatchChunkPayload) => request<ChunkRow>("PATCH", `/api/runs/${id}/chunks/${chunkId}`, payload),
+  patchChunks: (id: string, payload: BulkPatchChunksRequest) => request<ChunkRow[]>("PATCH", `/api/runs/${id}/chunks`, payload),
   redubChunk: (id: string, chunkId: string) => request<RunRecord>("POST", `/api/runs/${id}/chunks/${chunkId}/redub`),
+  redubChunks: (id: string, payload: BulkRedubChunksRequest) => request<RunRecord>("POST", `/api/runs/${id}/chunks/redub`, payload),
   previewInstruction: (id: string, chunkId: string, payload: PreviewInstructionRequest) =>
     request<PreviewInstructionResponse>("POST", `/api/runs/${id}/chunks/${chunkId}/preview-instruction`, payload),
   getStepDetail: (id: string, step: StepName) => request<StepDetailRecord>("GET", `/api/runs/${id}/steps/${step}`),

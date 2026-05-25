@@ -14,6 +14,7 @@ declare -A IMAGES=(
   [separator]="movie-dubbing/separator:local"
   [diarizer]="movie-dubbing/diarizer:local"
   [speaker]="movie-dubbing/speaker:local"
+  [vibevoice-asr]="movie-dubbing/vibevoice-asr:local"
   [tts-cosyvoice]="movie-dubbing/tts-cosyvoice:local"
 )
 

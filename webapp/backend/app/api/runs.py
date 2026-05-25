@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from webapp.backend.app.models import (
+    BulkPatchChunksRequest,
+    BulkRedubChunksRequest,
     ChunkRow,
     CreateRunRequest,
     LogResponse,
@@ -15,6 +17,7 @@ from webapp.backend.app.models import (
     PatchChunkPayload,
     PreviewInstructionRequest,
     PreviewInstructionResponse,
+    ReferenceCandidate,
     RunRecord,
     StepDetailRecord,
     StepName,
@@ -175,6 +178,11 @@ def get_chunk(run_id: str, chunk_id: str) -> ChunkRow:
     return row
 
 
+@router.get("/{run_id}/speaker-reference-bank", response_model=dict[str, list[ReferenceCandidate]])
+def get_speaker_reference_bank(run_id: str) -> dict[str, list[ReferenceCandidate]]:
+    return artifacts.list_speaker_reference_bank(_get_run_or_404(run_id))
+
+
 @router.patch("/{run_id}/chunks/{chunk_id}", response_model=ChunkRow)
 def patch_chunk(run_id: str, chunk_id: str, payload: PatchChunkPayload) -> ChunkRow:
     record = _get_run_or_404(run_id)
@@ -204,7 +212,80 @@ def patch_chunk(run_id: str, chunk_id: str, payload: PatchChunkPayload) -> Chunk
             before={"label": before.emotion if before else None, "scores": before.emotion_scores if before else None},
             after={"label": row.emotion, "scores": row.emotion_scores},
         )
+    if payload.speaker is not None:
+        activity.record(
+            run_id, "chunk_speaker_edit", chunk_id=chunk_id,
+            before=before.speaker if before else None, after=row.speaker,
+        )
+    if payload.reference_mode is not None or payload.reference_chunk_id is not None:
+        activity.record(
+            run_id, "chunk_reference_edit", chunk_id=chunk_id,
+            before={
+                "mode": before.reference_override_mode if before else None,
+                "chunk_id": before.reference_override_chunk_id if before else None,
+            },
+            after={
+                "mode": row.reference_override_mode,
+                "chunk_id": row.reference_override_chunk_id,
+            },
+        )
     return row
+
+
+@router.patch("/{run_id}/chunks", response_model=list[ChunkRow])
+def patch_chunks(run_id: str, payload: BulkPatchChunksRequest) -> list[ChunkRow]:
+    record = _get_run_or_404(run_id)
+    _ensure_editable(record)
+    if not payload.updates:
+        return []
+    before_rows = {row.chunk_id: row for row in artifacts.list_chunks(record)}
+    try:
+        rows = artifacts.patch_chunks(record, payload.updates)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="chunk not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    run_store.clear_output_video(run_id)
+    after_rows = {row.chunk_id: row for row in rows}
+    for update in payload.updates:
+        before = before_rows.get(update.chunk_id)
+        after = after_rows.get(update.chunk_id)
+        if after is None:
+            continue
+        if update.translated_text is not None:
+            activity.record(
+                run_id, "chunk_text_edit", chunk_id=update.chunk_id,
+                before=before.translated_text if before else None, after=after.translated_text,
+            )
+        if update.tts_instruct_text is not None:
+            activity.record(
+                run_id, "chunk_instruction_edit", chunk_id=update.chunk_id,
+                before=before.tts_instruct_text if before else None, after=after.tts_instruct_text,
+            )
+        if update.emotion_label is not None or update.emotion_scores is not None:
+            activity.record(
+                run_id, "chunk_emotion_edit", chunk_id=update.chunk_id,
+                before={"label": before.emotion if before else None, "scores": before.emotion_scores if before else None},
+                after={"label": after.emotion, "scores": after.emotion_scores},
+            )
+        if update.speaker is not None:
+            activity.record(
+                run_id, "chunk_speaker_edit", chunk_id=update.chunk_id,
+                before=before.speaker if before else None, after=after.speaker,
+            )
+        if update.reference_mode is not None or update.reference_chunk_id is not None:
+            activity.record(
+                run_id, "chunk_reference_edit", chunk_id=update.chunk_id,
+                before={
+                    "mode": before.reference_override_mode if before else None,
+                    "chunk_id": before.reference_override_chunk_id if before else None,
+                },
+                after={
+                    "mode": after.reference_override_mode,
+                    "chunk_id": after.reference_override_chunk_id,
+                },
+            )
+    return rows
 
 
 @router.post("/{run_id}/chunks/{chunk_id}/preview-instruction", response_model=PreviewInstructionResponse)
@@ -259,6 +340,27 @@ async def redub_chunk(run_id: str, chunk_id: str) -> RunRecord:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="chunk not found") from exc
     activity.record(run_id, "chunk_redub", chunk_id=chunk_id)
+    # 1) gen_tts_instructions ~ validate_tts 만 실제로 다시 돌림 (mux는 사용자가 명시 트리거)
+    _queue_steps(run_id, "generate_tts_instructions", to_step="validate_tts")
+    # 2) compose_audio + mux 도 pending 으로 마킹 — 새 dub 으로 최종 영상이 stale 함을 UI에 신호
+    run_store.reset_steps(run_id, ["compose_audio", "mux"])
+    return _get_run_or_404(run_id)
+
+
+@router.post("/{run_id}/chunks/redub", response_model=RunRecord)
+async def redub_chunks(run_id: str, payload: BulkRedubChunksRequest) -> RunRecord:
+    record = _get_run_or_404(run_id)
+    _ensure_editable(record)
+    if not payload.chunk_ids:
+        raise HTTPException(status_code=400, detail="chunk_ids required")
+    chunk_ids = list(dict.fromkeys(payload.chunk_ids))
+    _force_tts_skip_existing(record)
+    try:
+        artifacts.mark_chunks_stale(record, chunk_ids)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="chunk not found") from exc
+    for chunk_id in chunk_ids:
+        activity.record(run_id, "chunk_redub", chunk_id=chunk_id)
     # 1) gen_tts_instructions ~ validate_tts 만 실제로 다시 돌림 (mux는 사용자가 명시 트리거)
     _queue_steps(run_id, "generate_tts_instructions", to_step="validate_tts")
     # 2) compose_audio + mux 도 pending 으로 마킹 — 새 dub 으로 최종 영상이 stale 함을 UI에 신호

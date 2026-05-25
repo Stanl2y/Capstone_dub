@@ -11,7 +11,7 @@ import { StepStatusList } from "@/components/StepStatusList";
 import { useRunSocket } from "@/hooks/useRunSocket";
 import { getStepMeta } from "@/lib/pipelineSpec";
 import { fileName } from "@/lib/staticUrl";
-import { canCompareOutput, canInspectChunks, completedStepCount, deriveActiveStep, progressPercent, runStageMessage } from "@/lib/runReadiness";
+import { canCompareOutput, canInspectChunks, completedStepCount, deriveActiveStep, normalizeFailedTailSteps, progressPercent, runStageMessage } from "@/lib/runReadiness";
 
 export function Progress() {
   const { id = "" } = useParams<{ id: string }>();
@@ -43,19 +43,20 @@ export function Progress() {
   if (!runQuery.data) return <div className="p-8 text-body-sm text-term-red">run을 찾을 수 없습니다. {id}</div>;
 
   const run = runQuery.data;
+  const visibleSteps = normalizeFailedTailSteps(run.steps);
   const isActive = run.status === "running" || run.status === "queued";
   const canResume = run.status === "failed" || run.status === "canceled";
-  const resumeFromStep = run.steps.find((step) => step.state !== "done")?.name;
-  const activeStep = selectedStep ?? deriveActiveStep(run.steps);
-  const activeRecord = run.steps.find((step) => step.name === activeStep) ?? run.steps[0];
+  const resumeFromStep = visibleSteps.find((step) => step.state !== "done")?.name;
+  const activeStep = selectedStep ?? deriveActiveStep(visibleSteps);
+  const activeRecord = visibleSteps.find((step) => step.name === activeStep) ?? visibleSteps[0];
   const activeMeta = getStepMeta(activeRecord.name);
-  const done = completedStepCount(run.steps);
-  const progress = progressPercent(run.steps);
+  const done = completedStepCount(visibleSteps);
+  const progress = progressPercent(visibleSteps);
   const chunksReady = canInspectChunks(run);
   const compareReady = canCompareOutput(run);
 
   return (
-    <section className="h-[calc(100vh-56px)] overflow-hidden bg-background">
+    <section className="min-h-[calc(100vh-56px)] overflow-y-auto bg-background xl:h-[calc(100vh-56px)] xl:overflow-hidden">
       <header className="flex h-16 items-center justify-between border-b border-border-hairline bg-surface-container-lowest px-6">
         <div className="min-w-0">
           <div className="flex items-center gap-3">
@@ -80,16 +81,16 @@ export function Progress() {
         </div>
       </header>
 
-      <div className="grid h-[calc(100vh-120px)] grid-cols-[320px_minmax(420px,1fr)_480px] overflow-hidden">
-        <aside className="overflow-y-auto border-r border-border-hairline bg-surface-container-lowest p-5">
+      <div className="grid min-h-[calc(100vh-120px)] grid-cols-1 overflow-visible xl:h-[calc(100vh-120px)] xl:grid-cols-[320px_minmax(420px,1fr)_480px] xl:overflow-hidden">
+        <aside className="max-h-[280px] overflow-y-auto border-b border-border-hairline bg-surface-container-lowest p-5 xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="mb-5 flex items-end justify-between">
             <div>
               <p className="font-mono text-data-label uppercase text-data-label">Pipeline Steps</p>
-              <h2 className="mt-1 font-display text-heading-sm text-primary">15단계 실행</h2>
+              <h2 className="mt-1 font-display text-heading-sm text-primary">{visibleSteps.length}단계 실행</h2>
             </div>
-            <span className="font-mono text-code-sm text-mute">{done}/{run.steps.length}</span>
+            <span className="font-mono text-code-sm text-mute">{done}/{visibleSteps.length}</span>
           </div>
-          <StepStatusList steps={run.steps} activeStep={activeRecord.name} onStepSelect={setSelectedStep} />
+          <StepStatusList steps={visibleSteps} activeStep={activeRecord.name} onStepSelect={setSelectedStep} />
         </aside>
 
         <main className="overflow-y-auto p-7">
@@ -114,15 +115,15 @@ export function Progress() {
                 <div className="h-2 overflow-hidden rounded-full bg-surface-container">
                   <div className="h-full rounded-full bg-primary" style={{ width: `${progress}%` }} />
                 </div>
-                <div className="mt-4 grid grid-cols-3 gap-3 font-mono text-code-sm text-secondary">
+                <div className="mt-4 grid grid-cols-1 gap-3 font-mono text-code-sm text-secondary sm:grid-cols-3">
                   <Metric label="service" value={run.step_runtime?.[activeRecord.name]?.service ?? activeMeta.service} />
                   <Metric label="tool" value={run.step_runtime?.[activeRecord.name]?.tool || "—"} />
-                  <Metric label="completed" value={`${done}/${run.steps.length}`} />
+                  <Metric label="completed" value={`${done}/${visibleSteps.length}`} />
                 </div>
               </div>
             </Card>
 
-            <div className="grid grid-cols-2 gap-5">
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
               <ArtifactCard title="Inputs" items={activeMeta.inputs} />
               <ArtifactCard title="Expected Outputs" items={activeMeta.outputs} />
             </div>
@@ -130,7 +131,7 @@ export function Progress() {
             <Card className="rounded-[2rem] p-6">
               <p className="font-mono text-data-label uppercase text-data-label">Available Actions</p>
               <h2 className="mt-1 font-display text-heading-sm text-primary">지금 가능한 화면</h2>
-              <div className="mt-5 grid grid-cols-3 gap-3">
+              <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {chunksReady ? (
                   <Link to={`/runs/${run.run_id}/chunks`} className="rounded-[1.5rem] border border-border-hairline bg-surface-soft p-4 text-body-sm-strong text-primary hover:bg-surface-container">Chunks 확인</Link>
                 ) : (
@@ -147,7 +148,7 @@ export function Progress() {
           </div>
         </main>
 
-        <aside className="flex min-h-0 flex-col border-l border-border-hairline bg-[#080808] text-white">
+        <aside className="flex min-h-[260px] flex-col border-t border-border-hairline bg-[#080808] text-white xl:min-h-0 xl:border-l xl:border-t-0">
           <div className="flex h-12 items-center justify-between border-b border-white/10 bg-[#151515] px-5">
             <span className="font-mono text-data-label uppercase text-white/60">STDOUT LOGS</span>
             <span className="inline-flex items-center gap-2 font-mono text-code-sm text-white/60"><span className={`h-2 w-2 rounded-full ${connected ? "bg-status-done" : "bg-mute"}`} />{connected ? "live" : "not connected"}</span>

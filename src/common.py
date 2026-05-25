@@ -278,6 +278,9 @@ def build_dub_runtime_settings(
 
 def build_dub_input_signature(row: dict[str, Any], *, runtime: dict[str, Any] | None = None) -> str:
     payload = {
+        "speaker": str(row.get("speaker", "")),
+        "reference_mode_override": str(row.get("reference_mode_override", "")),
+        "reference_chunk_id_override": str(row.get("reference_chunk_id_override", "")),
         "text_src": normalize_signature_text(str(row.get("text_src", ""))),
         "text_translated": normalize_signature_text(str(row.get("text_translated", ""))),
         "text_tts": normalize_signature_text(str(row.get("text_tts", ""))),
@@ -346,6 +349,8 @@ def ensure_project_layout(config: dict[str, Any]) -> None:
         "bgm_audio",
         "diarization_rttm",
         "diarization_json",
+        "diarization_refiner_report",
+        "chunk_overrides_json",
         "speaker_chunks_json",
         "emotion_json",
         "asr_json",

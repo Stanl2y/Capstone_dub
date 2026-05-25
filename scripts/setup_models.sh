@@ -34,6 +34,7 @@ mkdir -p \
   "$PROJECT_ROOT/models/tts"
 
 download_model "Qwen/Qwen3-ASR-1.7B" "models/asr/Qwen3-ASR-1.7B"
+download_model "microsoft/VibeVoice-ASR-HF" "models/asr/VibeVoice-ASR-HF"
 download_model "Qwen/Qwen3-ForcedAligner-0.6B" "models/aligner/Qwen3-ForcedAligner-0.6B"
 download_model "emotion2vec/emotion2vec_plus_large" "models/emotion/emotion2vec-large"
 download_model "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" "models/tts/Fun-CosyVoice3-0.5B"

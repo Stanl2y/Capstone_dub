@@ -18,6 +18,8 @@ input/
 output/
 dub/
 chunks/
+!webapp/frontend/src/components/chunks/
+!webapp/frontend/src/components/chunks/**
 logs/
 meta/
 bef/
@@ -41,6 +43,8 @@ checklist.md
 context-notes.md
 conv.md
 next_steps.md
+tmp-ui-*.png
+.gstack-design-review-*.png
 
 # 디자인 참고 자료
 stitch_modern_slick_interface/

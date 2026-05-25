@@ -1,0 +1,20 @@
+# pyannote.audio 4.0 (speaker-diarization-community-1) 전용 CPU 이미지 — diarizer의 pyannote 3.1.1과 격리
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install "pyannote.audio==4.0.4" soundfile
+
+WORKDIR /workspace/project
+
+CMD ["sleep", "infinity"]

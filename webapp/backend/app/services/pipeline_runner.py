@@ -106,13 +106,15 @@ async def _execute(*, record, from_step: StepName, to_step: StepName) -> None:
         for service, group_steps in groups:
             if _ACTIVE is not None and _ACTIVE.canceled:
                 break
-            await _run_group(
+            group_ok = await _run_group(
                 run_id=run_id,
                 service=service,
                 group_steps=group_steps,
                 config_path=config_path,
                 log_fp=log_fp,
             )
+            if not group_ok:
+                break
             if "mux" in group_steps:
                 _set_output_video_if_ready(run_id, record)
         if _ACTIVE is not None and _ACTIVE.canceled:
@@ -149,7 +151,7 @@ async def _run_group(
     group_steps: list[StepName],
     config_path: str,
     log_fp,
-) -> None:
+) -> bool:
     """같은 service 연속 단계를 한 번의 docker compose exec 로 실행."""
     from_step = group_steps[0]
     to_step = group_steps[-1]
@@ -210,6 +212,11 @@ async def _run_group(
                         "message": f"docker exec exit={rc}",
                     })
                     break
+
+    if canceled:
+        return True
+    record = run_store.get(run_id)
+    return not bool(record and any(step.name in group_steps and step.state == "failed" for step in record.steps))
 
 
 def _dispatch_line(*, run_id: str, line: str, step_start_ts: dict[str, float]) -> None:

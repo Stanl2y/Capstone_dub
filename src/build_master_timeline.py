@@ -19,6 +19,47 @@ def _merge_quality_gates(*rows: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _default_chunk_overrides_path(output_json: str | Path) -> Path:
+    return resolve_project_path(output_json).with_name("chunk_overrides.json")
+
+
+def _load_chunk_overrides(path_value: str | Path | None, output_json: str | Path) -> dict[str, dict[str, Any]]:
+    path = resolve_project_path(path_value) if path_value else _default_chunk_overrides_path(output_json)
+    if not path.exists():
+        return {}
+    data = load_json_if_exists(path, default={})
+    if not isinstance(data, dict):
+        logger.warning("Ignoring chunk overrides because it is not an object: %s", path)
+        return {}
+    return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+
+
+def _normalize_reference_override(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"self", "speaker_bank", "manual"}:
+        return normalized
+    if normalized in {"speaker_best", "bank", "best"}:
+        return "speaker_bank"
+    return ""
+
+
+def _apply_chunk_override(row: dict[str, Any], override: dict[str, Any]) -> None:
+    speaker = str(override.get("speaker", "") or "").strip()
+    if speaker and speaker != str(row.get("speaker", "") or ""):
+        row.setdefault("speaker_original", row.get("speaker"))
+        row["speaker"] = speaker
+        row["speaker_override"] = True
+
+    reference_mode = _normalize_reference_override(override.get("reference_mode"))
+    reference_chunk_id = str(override.get("reference_chunk_id", "") or "").strip()
+    if reference_mode:
+        row["reference_mode_override"] = reference_mode
+        if reference_chunk_id:
+            row["reference_chunk_id_override"] = reference_chunk_id
+        else:
+            row.pop("reference_chunk_id_override", None)
+
+
 def build_master_timeline(
     speaker_chunks_json: str | Path,
     asr_json: str | Path,
@@ -28,6 +69,7 @@ def build_master_timeline(
     dub_dir: str | Path,
     emotion_json: str | Path | None = None,
     dub_runtime: dict[str, Any] | None = None,
+    chunk_overrides_json: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     chunks = load_json(speaker_chunks_json)
     asr_rows = {row["chunk_id"]: row for row in load_json(asr_json)}
@@ -38,6 +80,7 @@ def build_master_timeline(
         else {}
     )
     existing_timeline_rows = {row["chunk_id"]: row for row in load_json_if_exists(output_json, default=[])}
+    chunk_overrides = _load_chunk_overrides(chunk_overrides_json, output_json)
 
     dub_root = resolve_project_path(dub_dir)
     timeline: list[dict[str, Any]] = []
@@ -88,6 +131,10 @@ def build_master_timeline(
         merged_quality_gates = _merge_quality_gates(asr_row, translated_row)
         if merged_quality_gates:
             timeline_row["quality_gates"] = merged_quality_gates
+
+        override = chunk_overrides.get(str(chunk_id))
+        if override:
+            _apply_chunk_override(timeline_row, override)
 
         existing_row = existing_timeline_rows.get(chunk_id, {})
         existing_text_src = str(existing_row.get("text_src", "") or "").strip()
@@ -144,6 +191,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("output_json")
     parser.add_argument("--dub-dir", required=True)
     parser.add_argument("--emotion-json")
+    parser.add_argument("--chunk-overrides-json")
     parser.add_argument("--dub-runtime-json")
     parser.add_argument("--dub-runtime-json-file")
     return parser
@@ -163,6 +211,7 @@ def main() -> None:
         args.output_json,
         dub_dir=args.dub_dir,
         emotion_json=args.emotion_json,
+        chunk_overrides_json=args.chunk_overrides_json,
         dub_runtime=dub_runtime,
     )
 

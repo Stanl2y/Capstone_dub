@@ -49,6 +49,10 @@ COMPACT_TIMELINE_KEYS = (
     "dub_reference_wav",
     "dub_reference_mode",
     "dub_reference_preprocess",
+    "speaker_original",
+    "speaker_override",
+    "reference_mode_override",
+    "reference_chunk_id_override",
 )
 
 
@@ -170,6 +174,7 @@ class TtsSession:
     sf: Any
     feature_map: dict[str, dict[str, Any]]
     speaker_best_map: dict[str, Any]
+    row_by_chunk_id: dict[str, dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -281,6 +286,118 @@ def _resolve_tts_text(row: dict[str, Any]) -> tuple[str, str]:
     if text_src:
         return text_src, "text_src"
     return "", ""
+
+
+def _reference_override(row: dict[str, Any]) -> tuple[str, str]:
+    mode = str(row.get("reference_mode_override", "") or "").strip().lower()
+    if mode in {"speaker_best", "bank", "best"}:
+        mode = "speaker_bank"
+    if mode not in {"self", "speaker_bank", "manual"}:
+        return "", ""
+    return mode, str(row.get("reference_chunk_id_override", "") or "").strip()
+
+
+def _candidate_from_row(
+    candidate_row: dict[str, Any],
+    *,
+    mode: str,
+    feature_map: dict[str, dict[str, Any]],
+    min_prompt_sec: float,
+) -> dict[str, Any] | None:
+    chunk_id = str(candidate_row.get("chunk_id", "") or "").strip()
+    wav_value = candidate_row.get("wav")
+    if not chunk_id or not wav_value:
+        return None
+    feature = feature_map.get(chunk_id, {})
+    duration = float(candidate_row.get("duration") or 0.0)
+    candidate = {
+        "wav": resolve_project_path(wav_value),
+        "chunk_id": chunk_id,
+        "text_src": str(candidate_row.get("text_src", "") or ""),
+        "duration": duration,
+        "feature": feature,
+    }
+    assessment = assess_reference_candidate(
+        {
+            "wav": str(candidate["wav"]),
+            "text_src": candidate["text_src"],
+            "duration": duration,
+        },
+        chunk_feature=feature,
+        min_prompt_sec=min_prompt_sec,
+    )
+    return {**candidate, "assessment": assessment, "resolved_mode": mode}
+
+
+def _resolve_override_reference(
+    row: dict[str, Any],
+    *,
+    mode: str,
+    reference_chunk_id: str,
+    config: TtsRuntimeConfig,
+    session: TtsSession,
+) -> dict[str, Any] | None:
+    if mode == "self":
+        selected = _candidate_from_row(
+            row,
+            mode="self",
+            feature_map=session.feature_map,
+            min_prompt_sec=config.min_prompt_sec,
+        )
+    elif reference_chunk_id:
+        selected_row = session.row_by_chunk_id.get(reference_chunk_id)
+        if selected_row is None:
+            row["dub_error"] = f"Reference chunk not found: {reference_chunk_id}"
+            logger.warning("%s for %s", row["dub_error"], row.get("chunk_id"))
+            return None
+        if mode == "speaker_bank" and str(selected_row.get("speaker", "") or "") != str(row.get("speaker", "") or ""):
+            row["dub_error"] = (
+                f"Reference chunk {reference_chunk_id} is not in speaker {row.get('speaker')}"
+            )
+            logger.warning("%s", row["dub_error"])
+            return None
+        selected = _candidate_from_row(
+            selected_row,
+            mode=mode,
+            feature_map=session.feature_map,
+            min_prompt_sec=config.min_prompt_sec,
+        )
+    else:
+        speaker_key = str(row.get("speaker") or "")
+        selected = session.speaker_best_map.get(speaker_key)
+        if selected:
+            selected = {**selected, "resolved_mode": "speaker_bank"}
+
+    if not selected:
+        row["dub_error"] = f"No reference candidate available for override mode: {mode}"
+        logger.warning("%s (%s)", row["dub_error"], row.get("chunk_id"))
+        return None
+
+    assessment = selected.get("assessment") or {}
+    if not bool(assessment.get("accepted", False)):
+        row["dub_error"] = (
+            f"Reference candidate rejected: {', '.join(assessment.get('critical_flags') or [])}"
+        )
+        logger.warning("%s (%s)", row["dub_error"], row.get("chunk_id"))
+        return None
+
+    mode_label = str(selected.get("resolved_mode") or mode)
+    return {
+        "prompt_audio": selected["wav"],
+        "prompt_text_src": selected.get("text_src", "") or str(row.get("text_src", "") or ""),
+        "reference_chunk_id": selected["chunk_id"],
+        "reference_mode": mode_label,
+        "assessment": assessment,
+        "decision": "override",
+        "candidate_summaries": [
+            {
+                "mode": mode_label,
+                "chunk_id": selected.get("chunk_id"),
+                "assessment": assessment,
+            }
+        ],
+        "rejection_reasons": [],
+    }
 
 
 def _compact_timeline_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -623,13 +740,27 @@ def initialize_tts_session(
 
     feature_rows = ensure_chunk_features(rows, reference_path=output_target_path)
     feature_map = {str(item.get("chunk_id", "")).strip(): item for item in feature_rows if item.get("chunk_id")}
-    speaker_best_map = (
-        {}
-        if normalized_reference_mode == "self"
-        else build_speaker_reference_bank(rows, feature_map=feature_map, min_prompt_sec=min_prompt_sec)
+    needs_speaker_bank = normalized_reference_mode != "self" or any(
+        _reference_override(row)[0] == "speaker_bank" for row in rows
     )
+    speaker_best_map = (
+        build_speaker_reference_bank(rows, feature_map=feature_map, min_prompt_sec=min_prompt_sec)
+        if needs_speaker_bank
+        else {}
+    )
+    row_by_chunk_id = {
+        str(row.get("chunk_id", "") or "").strip(): row
+        for row in rows
+        if row.get("chunk_id")
+    }
     cosyvoice = AutoModel(model_dir=str(resolve_project_path(model_dir)))
-    return TtsSession(cosyvoice=cosyvoice, sf=sf, feature_map=feature_map, speaker_best_map=speaker_best_map)
+    return TtsSession(
+        cosyvoice=cosyvoice,
+        sf=sf,
+        feature_map=feature_map,
+        speaker_best_map=speaker_best_map,
+        row_by_chunk_id=row_by_chunk_id,
+    )
 
 
 def process_chunk(row: dict[str, Any], *, config: TtsRuntimeConfig, session: TtsSession) -> None:
@@ -678,18 +809,30 @@ def _resolve_chunk_reference(
     session: TtsSession,
 ) -> ChunkReference | None:
     translated_text, _ = _resolve_tts_text(row)
-    try:
-        reference = choose_reference_for_row(
+    mode, reference_chunk_id = _reference_override(row)
+    if mode:
+        reference = _resolve_override_reference(
             row,
-            feature_map=session.feature_map,
-            min_prompt_sec=config.min_prompt_sec,
-            reference_mode=config.normalized_reference_mode,
-            speaker_best_map=session.speaker_best_map,
+            mode=mode,
+            reference_chunk_id=reference_chunk_id,
+            config=config,
+            session=session,
         )
-    except Exception as exc:
-        row["dub_error"] = str(exc)
-        logger.warning("Failed to select reference for %s: %s", row["chunk_id"], exc)
-        return None
+        if reference is None:
+            return None
+    else:
+        try:
+            reference = choose_reference_for_row(
+                row,
+                feature_map=session.feature_map,
+                min_prompt_sec=config.min_prompt_sec,
+                reference_mode=config.normalized_reference_mode,
+                speaker_best_map=session.speaker_best_map,
+            )
+        except Exception as exc:
+            row["dub_error"] = str(exc)
+            logger.warning("Failed to select reference for %s: %s", row["chunk_id"], exc)
+            return None
 
     prompt_audio = Path(reference["prompt_audio"])
     prompt_text_src = str(reference.get("prompt_text_src", "") or "")

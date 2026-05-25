@@ -19,11 +19,8 @@ export function AppShell({ children }: AppShellProps) {
   const active = (match: string) => {
     if (match === "exact") return pathname === "/";
     if (match === "new") return pathname === "/runs/new";
-    // run 상세는 프로젝트의 일부 — /runs/:id/* 도 Projects 탭이 활성으로
-    if (match === "projects") {
-      if (pathname === "/projects" || pathname.startsWith("/projects/")) return true;
-      return /^\/runs\/[^/]+/.test(pathname) && pathname !== "/runs/new";
-    }
+    // Run-local pages keep their own context instead of highlighting Projects.
+    if (match === "projects") return pathname === "/projects" || pathname.startsWith("/projects/");
     return false;
   };
 

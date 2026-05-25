@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `webapp-backend` | python:3.12-slim + docker CLI + FastAPI | 8000 | 호스트 `/var/run/docker.sock` 마운트 → 기존 GPU 서비스로 `docker compose exec` |
 | `webapp-frontend` | node:20-alpine + Vite dev server | 5173 | `/api`·`/static`·`/ws` 를 `webapp-backend:8000` 으로 proxy |
-| `controller` / `demucs` / `speaker` / `tts-cosyvoice` | 기존 그대로 | — | 변경 없음. webapp-backend 가 docker socket 으로 호출 |
+| `controller` / `separator` / `diarizer` / `speaker` / `tts-cosyvoice` | 기존 그대로 | — | 변경 없음. webapp-backend 가 docker socket 으로 호출 |
 
 ## Dev 기동
 
@@ -22,7 +22,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\webapp\dev.ps1
 
 브라우저 — http://localhost:5173
 
-백엔드 헬스 — http://localhost:8000/api/health (docker CLI 통신 + 4개 GPU 서비스 상태 표시)
+백엔드 헬스 — http://localhost:8000/api/health (docker CLI 통신 + 5개 파이프라인 서비스 상태 표시)
 
 ## 디자인 시스템
 

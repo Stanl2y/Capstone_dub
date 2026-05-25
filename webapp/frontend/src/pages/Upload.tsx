@@ -140,7 +140,8 @@ export function Upload() {
 function ServicesHealth({ services }: { services?: Record<string, string> }) {
   const labels: Record<string, string> = {
     controller: "controller",
-    demucs: "demucs",
+    separator: "separator",
+    diarizer: "diarizer",
     speaker: "speaker",
     "tts-cosyvoice": "tts",
   };

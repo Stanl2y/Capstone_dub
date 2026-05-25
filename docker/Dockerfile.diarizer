@@ -34,6 +34,47 @@ RUN git clone --recurse-submodules https://github.com/BUTSpeechFIT/DiariZen.git 
     && if [ -d pyannote-audio ]; then python -m pip install -e ./pyannote-audio; fi \
     && python -m pip install "huggingface_hub[cli]>=0.25"
 
+# Visual 화자분리(얼굴 클러스터 + 능동 화자 탐지) 의존성
+# onnxruntime 는 CUDA 12 전용 휠로 통일 (DiariZen 임베딩도 동일 모듈 사용)
+# numpy 는 1.26.4 로 고정 — insightface 가 numpy 2.x 를 끌어오면 numpy 1.x 로 빌드된 torch/onnxruntime 가 깨진다
+RUN python -m pip uninstall -y onnxruntime onnxruntime-gpu || true \
+RUN python -m pip uninstall -y onnxruntime onnxruntime-gpu || true \
+    && python -m pip install --index-url https://download.pytorch.org/whl/cu121 --extra-index-url https://pypi.org/simple torchvision==0.16.1 \
+    && python -m pip install \
+        "numpy==1.26.4" \
+        insightface==0.7.3 \
+        opencv-python-headless \
+        python_speech_features \
+        modelscope==1.20.0 \
+        addict \
+        "datasets<3" \
+        oss2 \
+        simplejson \
+        yapf \
+        scipy \
+        scikit-learn \
+        scenedetect \
+        gdown \
+        coloredlogs \
+        flatbuffers \
+        packaging \
+        protobuf \
+        sympy \
+    && python -m pip uninstall -y onnxruntime onnxruntime-gpu || true \
+    && python -m pip install --no-deps --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ onnxruntime-gpu==1.18.0
+
+RUN python -m pip install --no-deps \
+        whisperx==3.3.1 \
+        faster-whisper==1.1.0 \
+        ctranslate2==4.4.0 \
+        av==13.1.0 \
+        transformers==4.51.3 \
+        tokenizers==0.21.4 \
+        nltk==3.9.1 \
+    && python -m pip install \
+        huggingface-hub==0.30.2 \
+        regex==2024.11.6
+
 WORKDIR /workspace/project
 
 CMD ["sleep", "infinity"]

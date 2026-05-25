@@ -49,6 +49,7 @@ Require-Command -Name "hf" -Hint 'Install it with: pip install "huggingface_hub[
 }
 
 Download-Model -RepoId "Qwen/Qwen3-ASR-1.7B" -LocalDir "models/asr/Qwen3-ASR-1.7B"
+Download-Model -RepoId "microsoft/VibeVoice-ASR-HF" -LocalDir "models/asr/VibeVoice-ASR-HF"
 Download-Model -RepoId "Qwen/Qwen3-ForcedAligner-0.6B" -LocalDir "models/aligner/Qwen3-ForcedAligner-0.6B"
 Download-Model -RepoId "emotion2vec/emotion2vec_plus_large" -LocalDir "models/emotion/emotion2vec-large"
 Download-Model -RepoId "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" -LocalDir "models/tts/Fun-CosyVoice3-0.5B"

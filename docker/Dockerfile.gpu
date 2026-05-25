@@ -51,3 +51,20 @@ RUN python -m pip install "qwen-asr>=0.0.6" modelscope==1.20.0 "funasr>=1.1.16" 
 WORKDIR /workspace/project
 
 CMD ["sleep", "infinity"]
+
+
+FROM base-gpu AS vibevoice-asr
+
+RUN python -m pip install --upgrade \
+    "transformers>=5.3.0" \
+    "accelerate>=1.0.0" \
+    "bitsandbytes>=0.46.0" \
+    "huggingface_hub[cli]>=0.30.0" \
+    "librosa>=0.10.0" \
+    "safetensors>=0.4.5" \
+    "sentencepiece>=0.2.0" \
+    "protobuf>=4.25.0"
+
+WORKDIR /workspace/project
+
+CMD ["sleep", "infinity"]
