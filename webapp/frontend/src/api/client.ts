@@ -55,6 +55,7 @@ export interface RunRecord {
 }
 
 export interface RunOverrides {
+  source_language?: string;
   target_language?: string;
   fit_to_duration?: boolean;
   duration_fit_max_tempo?: number;

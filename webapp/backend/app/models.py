@@ -42,6 +42,7 @@ RunStatus = Literal["queued", "running", "success", "failed", "canceled"]
 class RunOverrides(BaseModel):
     """UI 가 노출하는 knob — 이 외 필드는 base config 그대로 유지."""
 
+    source_language: Optional[str] = None
     target_language: Optional[str] = None
     fit_to_duration: Optional[bool] = None
     duration_fit_max_tempo: Optional[float] = Field(default=None, ge=0.5, le=2.0)

@@ -56,6 +56,15 @@ def _scope_paths_to_run(paths: dict, run_id: str) -> dict:
     return scoped
 
 
+# 원본 언어 풀네임 → WhisperX(team_refiner) 2글자 코드. asr/번역소스는 풀네임 그대로 사용.
+_SOURCE_LANG_CODE: dict[str, str] = {
+    "English": "en",
+    "Japanese": "ja",
+    "Korean": "ko",
+    "Chinese": "zh",
+    "Cantonese": "yue",
+}
+
 # UI knob 만 허용 — 그 외 base config 필드는 절대 덮어쓰지 않는다
 _OVERRIDE_MAP: dict[str, str] = {
     "target_language": "translation.target_language",
@@ -84,6 +93,14 @@ def build_run_config(
         if field not in _OVERRIDE_MAP:
             continue
         _set_nested(config, _OVERRIDE_MAP[field], value)
+
+    # 원본 언어 — 한 값을 ASR(풀네임)·번역 소스(풀네임)·team_refiner WhisperX(2글자 코드) 세 곳에 동시 반영.
+    # 영상 언어와 무관하게 base가 English로 고정되던 문제 해결(일본어 영상이 영어로 전사되던 케이스).
+    src = overrides.source_language
+    if src:
+        _set_nested(config, "asr.language", src)
+        _set_nested(config, "translation.source_language", src)
+        _set_nested(config, "diarization.team_refiner.language", _SOURCE_LANG_CODE.get(src, "en"))
 
     RUN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RUN_CONFIG_DIR / f"{run_id}.json"

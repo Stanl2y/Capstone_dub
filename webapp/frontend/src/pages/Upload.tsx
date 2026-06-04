@@ -30,6 +30,7 @@ export function Upload() {
   const [selectedInput, setSelectedInput] = useState<string>(prefillInput);
   const [baseConfig, setBaseConfig] = useState<string>("configs/cosyvoice3-docker-draft.json");
   const [overrides, setOverrides] = useState<RunOverrides>({
+    source_language: "English",
     target_language: "Korean",
     fit_to_duration: true,
     duration_fit_max_tempo: 1.25,
@@ -126,7 +127,7 @@ export function Upload() {
             <div className="space-y-3 rounded-[1.5rem] bg-surface-soft p-4 font-mono text-code-sm text-secondary">
               <div className="flex justify-between gap-3"><span>input</span><span className="truncate text-primary">{selectedInput || "not selected"}</span></div>
               <div className="flex justify-between gap-3"><span>config</span><span className="truncate text-primary">{baseConfig}</span></div>
-              <div className="flex justify-between gap-3"><span>target</span><span className="text-primary">{overrides.target_language}</span></div>
+              <div className="flex justify-between gap-3"><span>source → target</span><span className="text-primary">{overrides.source_language} → {overrides.target_language}</span></div>
             </div>
             {runMutation.isError && <div className="rounded-[1.5rem] bg-error-container p-4 text-caption-sm text-on-error-container">{(runMutation.error as Error).message}</div>}
             <Button onClick={onRun} disabled={!selectedInput || !baseConfig || runMutation.isPending} className="h-12 w-full">
@@ -242,6 +243,7 @@ function Knobs({ overrides, onChange }: { overrides: RunOverrides; onChange: (ne
   const set = <K extends keyof RunOverrides>(key: K, value: RunOverrides[K]) => onChange({ ...overrides, [key]: value });
   return (
     <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+      <SourceLanguagePicker value={overrides.source_language ?? "English"} onChange={(value) => set("source_language", value)} />
       <LanguagePicker value={overrides.target_language ?? "Korean"} onChange={(value) => set("target_language", value)} />
       <TempoStepper value={overrides.duration_fit_max_tempo ?? 1.25} onChange={(value) => set("duration_fit_max_tempo", value)} />
       <div className="space-y-2">
@@ -251,6 +253,28 @@ function Knobs({ overrides, onChange }: { overrides: RunOverrides; onChange: (ne
           <Toggle label="use_separator" value={overrides.use_separator ?? true} onChange={(v) => set("use_separator", v)} />
           <Toggle label="skip_existing" value={overrides.skip_existing ?? false} onChange={(v) => set("skip_existing", v)} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+// 원본 영상 언어 선택 — 한 값이 ASR·화자정제(WhisperX)·번역 소스에 동시 반영된다(영상 언어와 무관하게 영어로 고정되던 문제 해결)
+function SourceLanguagePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="space-y-2 md:col-span-2">
+      <div className="flex items-end justify-between gap-3">
+        <label className="text-body-sm-strong text-primary">source_language (원본 영상 언어)</label>
+        <span className="font-mono text-code-sm text-mute">ASR · 화자정제 · 번역 소스</span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {COSYVOICE_LANGUAGES.map((lang) => {
+          const selected = value === lang.label;
+          return (
+            <button key={lang.label} type="button" onClick={() => onChange(lang.label)} className={`inline-flex h-9 items-center rounded-full px-4 text-button-md ${selected ? "bg-primary text-white" : "bg-surface-soft text-primary hover:bg-surface-container"}`}>
+              {lang.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
