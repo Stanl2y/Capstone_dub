@@ -294,6 +294,137 @@ def _build_full_transcript_context(rows: list[dict[str, Any]]) -> str:
     return "\n".join(transcript_lines)
 
 
+# register 코드 → 줄단위 번역기가 쓰는 hint('polite'/'casual') + 사람이 읽는 한국어 라벨(가드 재번역용)
+_REGISTER_HINT = {
+    "jondaetmal-haeyo": "polite",
+    "jondaetmal-hapsyo": "polite",
+    "banmal": "casual",
+    "self-talk": "casual",
+    "narration": "polite",
+}
+_REGISTER_HUMAN = {
+    "jondaetmal-haeyo": "존댓말 해요체",
+    "jondaetmal-hapsyo": "존댓말 하십시오체",
+    "banmal": "반말",
+    "self-talk": "반말(혼잣말)",
+    "narration": "내레이션",
+}
+
+
+def _register_to_hint(register: str | None) -> str:
+    return _REGISTER_HINT.get(str(register or "").strip(), "")
+
+
+def _register_human(register: str | None) -> str:
+    return _REGISTER_HUMAN.get(str(register or "").strip(), "")
+
+
+def _is_korean_target(target_language: str) -> bool:
+    t = (target_language or "").lower()
+    return "korean" in t or "한국" in (target_language or "") or t in {"ko", "kr", "ko-kr"}
+
+
+def _build_register_map_messages(
+    rows: list[dict[str, Any]], *, source_language: str, target_language: str
+) -> tuple[str, str]:
+    # Pass 0 — 전체 대본에서 등장인물·관계·줄별 존댓말/반말(register)을 한 번에 추론. 화자 라벨은 불신.
+    system_prompt = (
+        "You are a Korean dubbing dramaturg. You receive the FULL source transcript of one scene "
+        f"({source_language or 'source'}), with each line tagged [index] [speaker] [timing]. The [speaker] tags "
+        "come from automatic diarization and are UNRELIABLE: one real character may be split across several tags, "
+        "and two real characters may be merged into one tag. IGNORE the tags as ground truth. Infer the real cast "
+        "and who-speaks-to-whom from the WORDS ONLY: names and titles used, address terms, statements of "
+        "relationship or shared history (\"you don't remember me\", \"Dad\", \"Doctor\"), who gives orders vs defers, "
+        "and the setting (lab, classroom, street, battlefield).\n"
+        "Output ONE minified JSON object, no markdown, with keys: characters, relationships, line_map.\n"
+        "- characters: array of {id, name_or_role, evidence}.\n"
+        "- relationships: array of DIRECTED pairs {from, to, power:\"up\"|\"down\"|\"peer\", "
+        "solidarity:\"stranger\"|\"acquaintance\"|\"close\"|\"intimate\"|\"family\", "
+        "register:\"jondaetmal-haeyo\"|\"jondaetmal-hapsyo\"|\"banmal\"|\"narration\"|\"self-talk\", "
+        "address_term, evidence, shift_at (optional: the index where this pair's register changes, with reason)}.\n"
+        "- line_map: array of {index, chunk_id, from, to, register} for EVERY line (use a self-talk/narration "
+        "relationship when there is no addressee).\n"
+        "Decide register with these rules, in priority order:\n"
+        "1) No human addressee (monologue, inner thought, self-talk) -> banmal. Narration to the audience -> pick one narrator level and keep it.\n"
+        "2) Strangers / first meeting / \"doesn't remember me\" / service encounter -> jondaetmal-haeyo "
+        "(jondaetmal-hapsyo if formal/public/military/press). EXCEPTION: an adult to a small child or a clearly outranked junior -> banmal.\n"
+        "3) Speaking UP to an elder / superior / authority / customer, or a formal/public setting -> jondaetmal "
+        "(hapsyo when addressing clear authority by title, e.g. 박사님; else haeyo).\n"
+        "4) Close peers / same-age friends shown to be intimate / established intimates / elder-to-younger family / adult-to-child -> banmal.\n"
+        "5) Otherwise, when evidence is weak, default to jondaetmal-haeyo. Wrong banmal is rude; wrong jondaetmal is only slightly distant.\n"
+        "Register is per ORDERED pair and may be ASYMMETRIC (A->B can differ from B->A). It is STABLE for the whole "
+        "scene unless an explicit in-dialogue trigger (\"말 놓자\", a power shift, open hostility, a reveal) appears — "
+        "then set shift_at and treat it as sticky afterward. Make the address_term agree with the register "
+        "(박사님+hapsyo, -씨+haeyo, -야/-아+banmal). Every decision must cite textual evidence; if you cannot justify "
+        "banmal, choose jondaetmal-haeyo."
+    )
+    user_prompt = (
+        f"Full source transcript ({source_language or 'source'}), to be dubbed into {target_language or 'Korean'}:\n"
+        f"{_build_full_transcript_context(rows)}\n\n"
+        "Return the JSON object with keys characters, relationships, line_map."
+    )
+    return system_prompt, user_prompt
+
+
+def _infer_register_map(
+    rows: list[dict[str, Any]],
+    *,
+    source_language: str,
+    target_language: str,
+    api_key: str,
+    base_url: str,
+    endpoint: str,
+    model_name: str,
+    timeout_sec: int,
+) -> dict[str, dict[str, str]]:
+    # Pass 0 호출 — chunk_id -> {from, to, register} 맵 반환. 실패 시 {} (현행 동작으로 안전 degrade).
+    refinable = [r for r in rows if not r.get("translation_blocked")] or rows
+    system_prompt, user_prompt = _build_register_map_messages(
+        refinable, source_language=source_language, target_language=target_language
+    )
+    try:
+        raw = _translate_with_vectorengine_api(
+            "",
+            source_language=source_language,
+            target_language=target_language,
+            target_duration_sec=None,
+            duration_budget=None,
+            register_hint="",
+            api_key=api_key,
+            base_url=base_url,
+            endpoint=endpoint,
+            model_name=model_name,
+            timeout_sec=timeout_sec,
+            response_format_json=True,
+            system_prompt_override=system_prompt,
+            user_prompt_override=user_prompt,
+        )
+    except TranslationBlocked as exc:
+        logger.warning("register map (Pass 0) blocked: %s — degrade to per-line register", exc.reason)
+        return {}
+    except Exception as exc:  # 타임아웃/네트워크/API 오류 등 — Pass 0 실패가 번역 전체를 죽이지 않도록 degrade.
+        logger.warning("register map (Pass 0) failed: %s — degrade to per-line register", exc)
+        return {}
+    try:
+        payload = json.loads(_strip_json_wrappers(raw))
+        line_map = payload.get("line_map") or []
+        out: dict[str, dict[str, str]] = {}
+        for entry in line_map:
+            cid = _normalize_text(str(entry.get("chunk_id", "")))
+            if cid:
+                out[cid] = {
+                    "from": str(entry.get("from", "")),
+                    "to": str(entry.get("to", "")),
+                    "register": str(entry.get("register", "")),
+                }
+        logger.info("register map (Pass 0): %s lines mapped across %s relationships",
+                    len(out), len(payload.get("relationships") or []))
+        return out
+    except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+        logger.warning("register map (Pass 0) parse failed: %s — degrade to per-line register", exc)
+        return {}
+
+
 def _build_context_refinement_messages(
     batch_rows: list[dict[str, Any]],
     *,
@@ -325,6 +456,34 @@ def _build_context_refinement_messages(
             "9. If a source line is empty, return empty strings for both text fields.\n"
             "10. Output JSON only. No markdown, explanations, or extra keys."
         )
+    elif any(row.get("register_assignment") for row in batch_rows):
+        # register 맵이 있으면 관계-키 존댓말/반말을 강제하는 프롬프트(Pass 2). 각 item 의 assigned_register 가 권위.
+        system_prompt = (
+            "You are a senior Korean dubbing translation editor.\n"
+            f"You are revising draft dialogue translated from {source_label} into {target_label}.\n"
+            "You will receive: (A) the full source transcript for global context, and (B) a batch of draft line "
+            "translations. Each batch item carries its own assigned_register and speaker_to_listener pair taken from a "
+            "scene relationship & register map.\n"
+            "Return one minified JSON object with exactly one top-level key: items. items is an array, same order as "
+            "the batch; each item has exactly the string keys chunk_id and text_translated.\n"
+            "Rules:\n"
+            "1. REGISTER IS DECIDED BY THE MAP, NOT BY YOU PER LINE. Every line MUST use its item's assigned_register: "
+            "jondaetmal-haeyo -> 해요체(-요); jondaetmal-hapsyo -> 하십시오체(-습니다/-습니까); banmal -> 반말(-아/-어/평어); "
+            "narration/self-talk -> as marked. Keep the SAME register for every line of the same speaker_to_listener pair across the whole scene.\n"
+            "2. Honor the speaker->listener RELATIONSHIP, not the [speaker] tag (unreliable) and not gender or age alone. "
+            "Make the address term (호칭: 박사님/-씨/-야 등) agree with the register.\n"
+            "3. Change a pair's register ONLY when the dialogue itself clearly triggers it (말 놓자, a power shift, open hostility, a reveal); "
+            "within one sentence split across chunks, never change register mid-way.\n"
+            "4. Rewrite into natural spoken dubbing dialogue, not literal subtitle translation; preserve emotion, intent, dramatic rhythm, humor, tension, subtext, and character voice.\n"
+            "5. Keep each line concise and speakable; respect each item's duration_budget. Naturalness outranks hitting the exact count, but never exceed max.\n"
+            "6. SPLIT SENTENCES: a line is often one fragment of a sentence continuing in the previous/next line. Translate each fragment as a clean deliverable Korean piece that connects naturally — no dangling subject without a predicate, no bare noun where a verb is needed. Keep the same register and tense across fragments.\n"
+            "7. Keep character names and world-specific terms consistent across the scene.\n"
+            "8. Choose the context-correct word sense; do not pick a wrong homonym (e.g. biological rebirth after surviving = 거듭남/재탄생, NOT 환생).\n"
+            "9. Keep essential arguments (objects like 나를/날, 그를) when dropping them makes the line unclear or truncated.\n"
+            "10. If ASR wording is noisy/fragmentary, repair only when context strongly supports it; do not invent plot facts. If a source line is empty, return an empty string.\n"
+            "11. Treat output as a performance script: numbers, dates, units, prices, abbreviations must be written exactly as a voice actor would say them aloud, not as digits or shorthand.\n"
+            "12. Output JSON only. No markdown, explanations, or extra keys."
+        )
     else:
         system_prompt = (
             "You are a senior dubbing translation editor.\n"
@@ -340,11 +499,14 @@ def _build_context_refinement_messages(
             "4. Keep each line concise, speakable, and suitable for dubbed performance in the target language.\n"
             "5. Prefer idiomatic spoken Korean over stiff or explanatory wording.\n"
             "6. Keep names and world-specific terms consistent across the scene.\n"
-            "7. Avoid random shifts between 존댓말 and 반말 unless context clearly requires it.\n"
-            "8. If ASR wording is noisy or fragmentary, repair only when the surrounding context strongly supports it. Do not invent new plot facts.\n"
-            "9. Treat the output as a performance script: every number, date, unit, price, and abbreviation must be written exactly the way a voice actor would pronounce it aloud, not as Arabic digits or written shorthand.\n"
-            "10. If a source line is empty, return an empty string for that line.\n"
-            "11. Output JSON only. No markdown, explanations, or extra keys."
+            "7. SPLIT SENTENCES: a source line is often ONE fragment of a sentence that continues in the previous or next line. Translate each fragment so it is a clean, deliverable Korean piece that connects naturally with its neighbours — never leave a dangling subject with no predicate, or a bare noun where the line needs a verb. Keep the SAME register and tense across all fragments of one sentence.\n"
+            "8. Avoid random shifts between 존댓말 and 반말 unless context clearly requires it; a sentence continued across chunks must NOT change register mid-way.\n"
+            "9. Choose the context-correct word sense — do not pick a wrong homonym (e.g. biological 'rebirth' after surviving a life stage is 거듭남/재탄생, NOT 환생/reincarnation).\n"
+            "10. Keep essential arguments (objects such as 나를/날, 그를) when dropping them makes the line unclear or sound truncated.\n"
+            "11. If ASR wording is noisy or fragmentary, repair only when the surrounding context strongly supports it. Do not invent new plot facts.\n"
+            "12. Treat the output as a performance script: every number, date, unit, price, and abbreviation must be written exactly the way a voice actor would pronounce it aloud, not as Arabic digits or written shorthand.\n"
+            "13. If a source line is empty, return an empty string for that line.\n"
+            "14. Output JSON only. No markdown, explanations, or extra keys."
         )
 
     batch_payload: list[dict[str, Any]] = []
@@ -362,6 +524,10 @@ def _build_context_refinement_messages(
             item["duration_budget"] = row["translation_budget"]
         if row.get("translation_style_hint"):
             item["speaker_style_hint"] = row["translation_style_hint"]
+        ra = row.get("register_assignment")
+        if ra:
+            item["assigned_register"] = ra.get("register")
+            item["speaker_to_listener"] = {"from": ra.get("from"), "to": ra.get("to")}
         if row.get("text_tts"):
             item["draft_tts"] = row["text_tts"]
         batch_payload.append(item)
@@ -879,12 +1045,15 @@ def _apply_duration_budget_control(
             attempts = 0
             while attempts < max_budget_rewrites and not fit["within_budget"]:
                 try:
+                    # 길이 압축 재번역이 존댓말 어미를 떨어뜨리지 않도록, 맵 register(있으면)를 권위로 전달.
+                    _ra = row.get("register_assignment")
+                    _rewrite_hint = _register_to_hint(_ra.get("register")) if _ra else str(row.get("translation_style_hint", "") or "")
                     revised_translation, revised_tts = _rewrite_translation_to_budget(
                         row,
                         source_language=source_language,
                         target_language=target_language,
                         budget=fit,
-                        register_hint=str(row.get("translation_style_hint", "") or ""),
+                        register_hint=_rewrite_hint,
                         api_key=api_key,
                         base_url=base_url,
                         endpoint=endpoint,
@@ -900,7 +1069,11 @@ def _apply_duration_budget_control(
                     row["text_translated_budgeted"] = revised_translation
                     if revised_tts:
                         row["text_tts"] = revised_tts
-                    row["translation_style_hint"] = detect_register(revised_translation)
+                    # 맵 register 가 있으면 그것을 유지(detect_register 로 자기참조 덮어쓰기 금지).
+                    if _ra:
+                        row["translation_style_hint"] = _register_to_hint(_ra.get("register")) or row.get("translation_style_hint")
+                    else:
+                        row["translation_style_hint"] = detect_register(revised_translation)
                     fit = _measure_budget_fit(
                         str(row.get("text_translated", "") or ""),
                         target_language=target_language,
@@ -936,6 +1109,7 @@ def build_translation_entries(
     context_batch_size: int = 12,
     duration_control: bool = True,
     max_budget_rewrites: int = 2,
+    register_plan: bool = True,
 ) -> list[dict[str, Any]]:
     asr_rows = load_json(asr_json)
     existing_rows = load_json_if_exists(output_json, default=[])
@@ -961,6 +1135,20 @@ def build_translation_entries(
         if not api_key:
             raise RuntimeError(f"VECTORENGINE_API_KEY is missing. Put it in {env_file}.")
 
+    # Pass 0 — 한국어 더빙이면 전체 대본에서 (화자→청자) 관계별 존댓말/반말 맵을 한 번 추론(라벨 불신, 내용 기반).
+    register_map: dict[str, dict[str, str]] = {}
+    if mode == "vectorengine_gpt" and register_plan and _is_korean_target(target_language):
+        register_map = _infer_register_map(
+            asr_rows,
+            source_language=source_language,
+            target_language=target_language,
+            api_key=api_key,
+            base_url=base_url,
+            endpoint=endpoint,
+            model_name=model_name,
+            timeout_sec=timeout_sec,
+        )
+
     translated_rows: list[dict[str, Any]] = []
     speaker_register_memory: dict[str, str] = {}
     reset_count = 0
@@ -981,7 +1169,12 @@ def build_translation_entries(
             chunk_feature=chunk_feature_map.get(str(row["chunk_id"])),
         )
         speaker = str(row.get("speaker") or "")
-        register_hint = speaker_register_memory.get(speaker, "")
+        # register 우선순위 — Pass 0 관계맵(내용 기반·신뢰) > 화자라벨 메모리(불안정, 폴백).
+        register_assignment = register_map.get(str(row["chunk_id"]))
+        if register_assignment:
+            register_hint = _register_to_hint(register_assignment.get("register"))
+        else:
+            register_hint = speaker_register_memory.get(speaker, "")
         blocked_reason: str | None = None
 
         if mode == "copy_source":
@@ -1046,6 +1239,11 @@ def build_translation_entries(
         if speaker and detected_register in {"polite", "casual"}:
             speaker_register_memory[speaker] = detected_register
 
+        # 관계맵이 있으면 그 register 를 권위 있는 style_hint 로(불안정한 라벨 기반 메모리 대신).
+        if register_assignment:
+            style_hint = register_hint or speaker_register_memory.get(speaker, "")
+        else:
+            style_hint = speaker_register_memory.get(speaker, register_hint)
         translated_row = {
             "chunk_id": row["chunk_id"],
             "speaker": row.get("speaker"),
@@ -1060,8 +1258,10 @@ def build_translation_entries(
             "translation_budget": _measure_budget_fit(text_translated, target_language=target_language, budget=budget),
             "translation_context_refined": False,
             "translation_revision_count": 0,
-            "translation_style_hint": speaker_register_memory.get(speaker, register_hint),
+            "translation_style_hint": style_hint,
         }
+        if register_assignment:
+            translated_row["register_assignment"] = register_assignment
         if blocked_reason:
             translated_row["translation_blocked"] = True
             translated_row["translation_blocked_reason"] = blocked_reason
@@ -1139,6 +1339,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-duration-control", dest="duration_control", action="store_false")
     parser.set_defaults(duration_control=True)
     parser.add_argument("--max-budget-rewrites", type=int, default=2)
+    parser.add_argument("--register-plan", dest="register_plan", action="store_true")
+    parser.add_argument("--no-register-plan", dest="register_plan", action="store_false")
+    parser.set_defaults(register_plan=True)
     return parser
 
 
@@ -1156,6 +1359,7 @@ def main() -> None:
         context_batch_size=args.context_batch_size,
         duration_control=args.duration_control,
         max_budget_rewrites=args.max_budget_rewrites,
+        register_plan=args.register_plan,
     )
 
 

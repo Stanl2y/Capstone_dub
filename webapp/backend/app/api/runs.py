@@ -326,6 +326,7 @@ def preview_chunk_instruction(run_id: str, chunk_id: str, payload: PreviewInstru
         all_rows=all_rows,
         env_file=env_file,
         timeout_sec=20,
+        target_language=str((config.get("translation") or {}).get("target_language") or "Korean"),
     )
     return PreviewInstructionResponse(instruction=instruction, source=source)
 
@@ -340,10 +341,9 @@ async def redub_chunk(run_id: str, chunk_id: str) -> RunRecord:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="chunk not found") from exc
     activity.record(run_id, "chunk_redub", chunk_id=chunk_id)
-    # 1) gen_tts_instructions ~ validate_tts 만 실제로 다시 돌림 (mux는 사용자가 명시 트리거)
-    _queue_steps(run_id, "generate_tts_instructions", to_step="validate_tts")
-    # 2) compose_audio + mux 도 pending 으로 마킹 — 새 dub 으로 최종 영상이 stale 함을 UI에 신호
-    run_store.reset_steps(run_id, ["compose_audio", "mux"])
+    # gen_tts_instructions ~ mux 까지 자동 재실행 — 청크 dub 뿐 아니라 최종 합성/영상까지 갱신해
+    # "청크는 반영됐는데 최종 영상은 stale" 한 부분반영 문제를 없앤다.
+    _queue_steps(run_id, "generate_tts_instructions", to_step="mux")
     return _get_run_or_404(run_id)
 
 
@@ -361,10 +361,8 @@ async def redub_chunks(run_id: str, payload: BulkRedubChunksRequest) -> RunRecor
         raise HTTPException(status_code=404, detail="chunk not found") from exc
     for chunk_id in chunk_ids:
         activity.record(run_id, "chunk_redub", chunk_id=chunk_id)
-    # 1) gen_tts_instructions ~ validate_tts 만 실제로 다시 돌림 (mux는 사용자가 명시 트리거)
-    _queue_steps(run_id, "generate_tts_instructions", to_step="validate_tts")
-    # 2) compose_audio + mux 도 pending 으로 마킹 — 새 dub 으로 최종 영상이 stale 함을 UI에 신호
-    run_store.reset_steps(run_id, ["compose_audio", "mux"])
+    # gen_tts_instructions ~ mux 까지 자동 재실행 — 최종 영상까지 갱신(부분반영 방지).
+    _queue_steps(run_id, "generate_tts_instructions", to_step="mux")
     return _get_run_or_404(run_id)
 
 

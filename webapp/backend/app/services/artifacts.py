@@ -33,9 +33,13 @@ _PATH_KEYS: dict[StepName, tuple[list[tuple[str, str]], list[tuple[str, str]]]] 
     "diarize": ([('dialogue audio', 'paths.dialogue_audio')], [('diarization RTTM', 'paths.diarization_rttm')]),
     "rttm_to_json": ([('diarization RTTM', 'paths.diarization_rttm')], [('diarization JSON', 'paths.diarization_json')]),
     "merge_chunks": ([('diarization JSON', 'paths.diarization_json')], [('speaker chunks', 'paths.speaker_chunks_json')]),
+    "visual_diarize": ([('speaker chunks', 'paths.speaker_chunks_json'), ('ASD tracks', 'paths.asd_tracks_json')], [('speaker chunks', 'paths.speaker_chunks_json')]),
+    "reassign_speakers": ([('speaker chunks', 'paths.speaker_chunks_json'), ('dialogue audio', 'paths.dialogue_audio')], [('speaker chunks', 'paths.speaker_chunks_json')]),
+    "remerge_chunks": ([('speaker chunks', 'paths.speaker_chunks_json')], [('speaker chunks', 'paths.speaker_chunks_json')]),
     "cut_chunks": ([('speaker chunks', 'paths.speaker_chunks_json'), ('chunk source audio', 'audio.chunk_source')], [('chunk directory', 'paths.chunks_dir')]),
     "extract_emotion": ([('speaker chunks', 'paths.speaker_chunks_json'), ('chunk directory', 'paths.chunks_dir')], [('emotion JSON', 'paths.emotion_json')]),
     "run_asr": ([('speaker chunks', 'paths.speaker_chunks_json'), ('chunk directory', 'paths.chunks_dir')], [('ASR JSON', 'paths.asr_json')]),
+    "fuse_emotion_text": ([('emotion JSON', 'paths.emotion_json'), ('ASR JSON', 'paths.asr_json')], [('emotion JSON', 'paths.emotion_json')]),
     "translate": ([('ASR JSON', 'paths.asr_json')], [('translated JSON', 'paths.translated_json')]),
     "build_timeline": ([('speaker chunks', 'paths.speaker_chunks_json'), ('ASR JSON', 'paths.asr_json'), ('translated JSON', 'paths.translated_json'), ('emotion JSON', 'paths.emotion_json')], [('master timeline', 'paths.master_timeline_json')]),
     "generate_tts_instructions": ([('master timeline', 'paths.master_timeline_json')], [('master timeline', 'paths.master_timeline_json')]),
@@ -299,6 +303,7 @@ def patch_chunks(record: RunRecord, updates: list[PatchChunkUpdate]) -> list[Chu
                 tts_instruct_text=update.tts_instruct_text,
                 emotion_label=update.emotion_label,
                 emotion_scores=update.emotion_scores,
+                target_language=str((config.get("translation") or {}).get("target_language") or "Korean"),
             ):
                 master_changed = True
                 changed = True
@@ -464,6 +469,7 @@ def _patch_master_for_advanced_fields(
     tts_instruct_text: str | None,
     emotion_label: str | None,
     emotion_scores: dict[str, float] | None,
+    target_language: str = "Korean",
 ) -> bool:
     for row in rows:
         if str(row.get("chunk_id", "")) != chunk_id:
@@ -501,8 +507,9 @@ def _patch_master_for_advanced_fields(
 
         # tts_instruct_text 편집 — sanitize 로 영어/endofprompt 강제. CJK 만 있던 입력은 빈 결과 → manual 마킹 안 하고 다음 redub 가 LLM 으로 채우게
         if tts_instruct_text is not None:
-            from generate_tts_instructions import sanitize_instruction
-            cleaned = sanitize_instruction(tts_instruct_text)
+            from generate_tts_instructions import _apply_language_directive, sanitize_instruction
+            # sanitize 가 옛 언어지시(CJK)를 먼저 제거 → 깨끗한 영어 instruct 에 타깃 언어지시를 다시 부여(멱등)
+            cleaned = _apply_language_directive(sanitize_instruction(tts_instruct_text), target_language)
             if cleaned:
                 row["tts_instruct_text"] = cleaned
                 row["tts_instruct_source"] = "manual"

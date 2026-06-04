@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from webapp.backend.app.api import projects, runs, uploads, ws
+from webapp.backend.app.services import run_store
 
 PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "/workspace/project"))
 COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "movie-dubbing-project")
@@ -30,6 +31,15 @@ app.include_router(runs.router)
 app.include_router(projects.router)
 app.include_router(uploads.router)
 app.include_router(ws.router)
+
+
+@app.on_event("startup")
+def _reconcile_interrupted_runs() -> None:
+    # 백엔드 재시작(코드 reload/크래시/재배포) 시 진행 중이던 run 은 함께 죽는다(fire-and-forget asyncio task + docker exec 자식).
+    # 그 결과 레코드가 running/queued 로 영원히 멈추므로, 시작 시 failed 로 정리해 사용자가 재시도할 수 있게 한다.
+    for record in run_store.list_runs():
+        if record.status in ("running", "queued"):
+            run_store.update_status(record.run_id, "failed", error="interrupted by backend restart")
 
 
 # 산출물 정적 서빙 — wavesurfer/audio/video 가 Range 요청 가능하도록 StaticFiles 사용

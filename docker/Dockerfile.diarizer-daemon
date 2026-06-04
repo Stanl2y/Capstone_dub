@@ -1,0 +1,7 @@
+# diarizer 이미지에 HTTP 데몬 런타임(fastapi/uvicorn/requests)만 얇게 추가 — DiariZen 데몬(8913)용.
+FROM movie-dubbing/diarizer:local
+RUN python -m pip install "fastapi==0.111.0" "uvicorn==0.30.1" requests
+# repair patch 들이 ERes2NetV2 임베딩에 쓰는 speakerlab(3D-Speaker). modelscope 가 함께 올라간다.
+RUN python -m pip install speakerlab
+WORKDIR /workspace/project
+CMD ["sleep", "infinity"]

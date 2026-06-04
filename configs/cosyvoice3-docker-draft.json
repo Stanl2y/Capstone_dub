@@ -8,6 +8,8 @@
     "diarization_json": "meta/{input_stem}/diarization.json",
     "diarization_stabilized_json": "meta/{input_stem}/diarization_stabilized.json",
     "diarization_refiner_report": "meta/{input_stem}/diarization_team_refiner_report.json",
+    "asd_tracks_json": "meta/{input_stem}/asd_tracks.json",
+    "chunk_embeddings_json": "meta/{input_stem}/chunk_embeddings.json",
     "chunk_overrides_json": "meta/{input_stem}/chunk_overrides.json",
     "speaker_chunks_json": "meta/{input_stem}/speaker_chunks.json",
     "emotion_json": "meta/{input_stem}/emotion.json",
@@ -58,12 +60,18 @@
     "dtype": "float16"
   },
   "chunking": {
-    "speaker_merge_gap_sec": 0.2,
+    "speaker_merge_gap_sec": 0.7,
     "min_chunk_sec": 0.2,
-    "max_chunk_sec": 15
+    "max_chunk_sec": 10,
+    "merge_f0_gate_hz": 50.0,
+    "remerge_f0_gate_hz": 0.0,
+    "short_absorb_sec": 0.35,
+    "remerge_after_reassign": true
   },
   "diarization": {
     "engine": "team_refiner",
+    "fusion_url": "http://fusion:8918",
+    "min_duration": 0.3,
     "min_speakers": 1,
     "max_speakers": 7,
     "seg_duration": 8,
@@ -98,6 +106,25 @@
       "word_level_intra_split": {
         "enabled": true,
         "margin": 0.1
+      },
+      "ecapa": {
+        "enabled": false,
+        "model_path": "models/embedding/spkrec-ecapa-voxceleb",
+        "cosine_thr": 0.5,
+        "min_sub": 2,
+        "min_dominant": 3,
+        "max_main_speakers": 3,
+        "device": "cuda",
+        "required": false
+      },
+      "gap_fill_bg": {
+        "enabled": false,
+        "gap_min": 1.5,
+        "pad": 0.2,
+        "sim_main_match": 0.5,
+        "bg_merge": 0.4,
+        "overlap_max": 0.5,
+        "required": false
       }
     },
     "stabilization": {
@@ -108,22 +135,88 @@
       "tiny_segment_sec": 0.12,
       "absorb_gap_sec": 0.25,
       "max_passes": 5
+    },
+    "reassign": {
+      "enabled": true,
+      "min_sim": 0.4,
+      "margin": 0.07,
+      "passes": 3,
+      "model": "models/embedding/wespeaker-voxblink2-samresnet100/speaker-embedding.onnx",
+      "split": {
+        "enabled": true,
+        "within_margin": 0.08,
+        "min_sub": 2,
+        "sil_min": 0.15,
+        "min_label_chunks": 4,
+        "f0_split_hz": 70.0
+      },
+      "merge": {
+        "enabled": true,
+        "margin": 0.05,
+        "min_threshold": 0.6,
+        "min_members": 2
+      },
+      "singleton_absorb": {
+        "enabled": true,
+        "dur_low": 0.6,
+        "dur_high": 1.4,
+        "tau_abs": 0.5,
+        "tau_strong": 0.62,
+        "margin": 0.06,
+        "gap_sec": 0.5,
+        "proximity_floor": 0.3
+      },
+      "recluster": {
+        "enabled": true,
+        "tau": 0.45,
+        "max_chunks": 18
+      }
     }
   },
   "emotion": {
     "backend": "funasr",
-    "skip_existing": true
+    "skip_existing": true,
+    "text_fusion": {
+      "enabled": true,
+      "mode": "vectorengine_gpt",
+      "batch_size": 8,
+      "text_weight": 0.7,
+      "timeout_sec": 30,
+      "skip_existing": true
+    }
+  },
+  "asr": {
+    "language": "English",
+    "full_audio": {
+      "enabled": true,
+      "forced_aligner": "models/aligner/Qwen3-ForcedAligner-0.6B",
+      "max_new_tokens": 4096,
+      "gap_recovery": {
+        "enabled": false,
+        "gap_min": 0.6,
+        "pad": 0.3,
+        "vol": 3.0,
+        "silence_dbfs": -55.0,
+        "max_word_dur": 2.0,
+        "min_word_dur": 0.06
+      }
+    },
+    "gate": {
+      "min_rms_dbfs": null,
+      "min_voiced_ratio": 0.35
+    }
   },
   "translation": {
     "mode": "vectorengine_gpt",
     "source_language": "English",
     "target_language": "Korean",
     "env_file": ".env",
-    "timeout_sec": 120,
+    "timeout_sec": 240,
     "context_refine": true,
     "context_batch_size": 12,
     "duration_control": true,
-    "max_budget_rewrites": 2
+    "max_budget_rewrites": 2,
+    "register_plan": false
   },
   "tts": {
     "system_prompt": "",
@@ -143,6 +236,7 @@
     "prompt_cap_max_sec": 4.5,
     "engine": "cosyvoice",
     "speed": 1.0,
+    "use_rl_llm": true,
     "style_priority": "balanced",
     "reference_mode": "auto",
     "compact_timeline": true,
@@ -165,11 +259,26 @@
   "pipeline": {
     "stop_on_error": true,
     "use_separator": true,
-    "redirect_nonspeech": true
+    "redirect_nonspeech": true,
+    "visual_diarize": {
+      "enabled": true,
+      "run_lightasd": true,
+      "python": "python",
+      "det_size": 640,
+      "face_sim_threshold": 0.4,
+      "min_speak_score": 0.5,
+      "min_evidence": 5.0,
+      "dominant_ratio": 0.5,
+      "min_split_chunks": 2,
+      "do_split": true,
+      "do_reassign": true,
+      "do_intra_split": true,
+      "min_intra_sec": 0.7
+    }
   },
   "redirect_nonspeech": {
     "model_path": "models/vad/silero_vad.jit",
-    "threshold": 0.3,
+    "threshold": 0.4,
     "min_speech_ms": 500,
     "pad_ms": 100,
     "ramp_ms": 15

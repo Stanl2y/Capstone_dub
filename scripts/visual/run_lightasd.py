@@ -131,10 +131,11 @@ def crop_video(track, crop_file: str, frames_dir: str, audio_path: str, crop_sca
     vout.release()
     audio_tmp = crop_file + ".wav"
     audio_start, audio_end = track["frame"][0] / FPS, (track["frame"][-1] + 1) / FPS
-    subprocess.call("ffmpeg -y -i %s -async 1 -ac 1 -vn -acodec pcm_s16le -ar 16000 -threads %d -ss %.3f -to %.3f %s -loglevel panic"
-                    % (audio_path, threads, audio_start, audio_end, audio_tmp), shell=True)
-    subprocess.call("ffmpeg -y -i %st.avi -i %s -threads %d -c:v copy -c:a copy %s.avi -loglevel panic"
-                    % (crop_file, audio_tmp, threads, crop_file), shell=True)
+    subprocess.call(["ffmpeg", "-y", "-i", audio_path, "-async", "1", "-ac", "1", "-vn",
+                     "-acodec", "pcm_s16le", "-ar", "16000", "-threads", str(threads),
+                     "-ss", "%.3f" % audio_start, "-to", "%.3f" % audio_end, audio_tmp, "-loglevel", "panic"])
+    subprocess.call(["ffmpeg", "-y", "-i", crop_file + "t.avi", "-i", audio_tmp, "-threads", str(threads),
+                     "-c:v", "copy", "-c:a", "copy", crop_file + ".avi", "-loglevel", "panic"])
     os.remove(crop_file + "t.avi")
     return {"track": track, "proc_track": dets}
 
@@ -190,9 +191,17 @@ def main() -> None:
     parser.add_argument("--min-track", type=int, default=10)
     parser.add_argument("--num-failed-det", type=int, default=10)
     parser.add_argument("--min-face", type=int, default=1)
+    # 검출 해상도. 기본 640(검증 baseline). 1280 으로 올리면 작은/원거리 얼굴 검출률이
+    # 올라 트랙 임베딩 성공률이 개선되나(팀원 측정 ~30/62→59/62) 검출이 느려지고
+    # face cluster 수가 늘 수 있어 face_sim_threshold 재튜닝이 필요할 수 있다.
+    parser.add_argument("--det-size", type=int, default=640)
     parser.add_argument("--crop-scale", type=float, default=0.40)
     parser.add_argument("--threads", type=int, default=10)
     args = parser.parse_args()
+
+    # 무조건 GPU. CPU 추론은 ASD 점수·얼굴 임베딩이 틀어진다(설명서 경고) → 명시적 중단.
+    if not torch.cuda.is_available():
+        raise SystemExit("run_lightasd: CUDA GPU가 필요하다. CPU 실행은 결과가 틀어지므로 중단한다.")
 
     video_in = os.path.abspath(args.video)
     output_json = os.path.abspath(args.output_json)
@@ -204,12 +213,16 @@ def main() -> None:
     for d in (frames_dir, crop_dir):
         os.makedirs(d, exist_ok=True)
 
-    subprocess.call("ffmpeg -y -i %s -qscale:v 2 -threads %d -async 1 -r %d %s -loglevel panic" % (video_in, args.threads, FPS, video_25), shell=True)
-    subprocess.call("ffmpeg -y -i %s -qscale:a 0 -ac 1 -vn -threads %d -ar 16000 %s -loglevel panic" % (video_25, args.threads, audio_16k), shell=True)
-    subprocess.call("ffmpeg -y -i %s -qscale:v 2 -threads %d -f image2 %s -loglevel panic" % (video_25, args.threads, os.path.join(frames_dir, "%06d.jpg")), shell=True)
+    subprocess.call(["ffmpeg", "-y", "-i", video_in, "-qscale:v", "2", "-threads", str(args.threads),
+                     "-async", "1", "-r", str(FPS), video_25, "-loglevel", "panic"])
+    subprocess.call(["ffmpeg", "-y", "-i", video_25, "-qscale:a", "0", "-ac", "1", "-vn",
+                     "-threads", str(args.threads), "-ar", "16000", audio_16k, "-loglevel", "panic"])
+    subprocess.call(["ffmpeg", "-y", "-i", video_25, "-qscale:v", "2", "-threads", str(args.threads),
+                     "-f", "image2", os.path.join(frames_dir, "%06d.jpg"), "-loglevel", "panic"])
 
-    app = FaceAnalysis(name="antelopev2", root=FACE_ROOT, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    app.prepare(ctx_id=0, det_size=(640, 640))
+    # GPU 전용 — CPU fallback 금지. CPU EP 로 새면 얼굴 임베딩이 달라져 결과가 틀어진다(설명서 경고).
+    app = FaceAnalysis(name="antelopev2", root=FACE_ROOT, providers=["CUDAExecutionProvider"])
+    app.prepare(ctx_id=0, det_size=(args.det_size, args.det_size))
 
     scenes = scene_detect(video_25)
     faces = detect_faces(app, frames_dir)

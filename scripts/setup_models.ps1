@@ -55,6 +55,7 @@ Download-Model -RepoId "emotion2vec/emotion2vec_plus_large" -LocalDir "models/em
 Download-Model -RepoId "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" -LocalDir "models/tts/Fun-CosyVoice3-0.5B"
 Download-Model -RepoId "BUT-FIT/diarizen-wavlm-large-s80-md-v2" -LocalDir "models/diarization/diarizen-wavlm-large-s80-md-v2"
 Download-Model -RepoId "hbredin/wespeaker-voxceleb-resnet34-LM" -LocalDir "models/embedding/wespeaker-voxceleb-resnet34-LM"
+Download-Model -RepoId "speechbrain/spkrec-ecapa-voxceleb" -LocalDir "models/embedding/spkrec-ecapa-voxceleb"
 
 function Download-SeparatorModel {
     param(

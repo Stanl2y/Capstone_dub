@@ -1,0 +1,19 @@
+{
+ "clip": "sample",
+ "chunk_to_character": {
+  "chunk_0001": "Burns",
+  "chunk_0002": "Burns",
+  "chunk_0003": "Burns",
+  "chunk_0004": "Smithers",
+  "chunk_0005": "Burns",
+  "chunk_0006": "Burns",
+  "chunk_0007": "Smithers",
+  "chunk_0008": "Smithers",
+  "chunk_0009": "?Burns",
+  "chunk_0010": "?Burns",
+  "chunk_0011": "Lisa",
+  "chunk_0012": "Lisa",
+  "chunk_0013": "?Burns",
+  "chunk_0014": "?Burns"
+ }
+}

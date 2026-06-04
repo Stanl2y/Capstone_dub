@@ -722,6 +722,7 @@ def initialize_tts_session(
     normalized_reference_mode: str,
     min_prompt_sec: float,
     output_target_path: str | Path,
+    use_rl_llm: bool = True,
 ) -> TtsSession:
     if not cosyvoice_repo:
         raise RuntimeError("CosyVoice repo path is required")
@@ -754,6 +755,21 @@ def initialize_tts_session(
         if row.get("chunk_id")
     }
     cosyvoice = AutoModel(model_dir=str(resolve_project_path(model_dir)))
+    # RL 후처리 LLM 가중치(llm.rl.pt)가 있으면 교체 — 공식 _RL 변형은 base 대비 발음 정확도(CER)·운율
+    # 자연스러움이 우수(우리 ASR-CER A/B: base 0.081 → rl 0.005). flow/hift 는 동일, LLM 만 RL.
+    if use_rl_llm:
+        rl_llm = resolve_project_path(model_dir) / "llm.rl.pt"
+        if rl_llm.exists():
+            import torch
+
+            cosyvoice.model.llm.load_state_dict(
+                torch.load(str(rl_llm), map_location=cosyvoice.model.device, weights_only=True),
+                strict=True,
+            )
+            cosyvoice.model.llm.to(cosyvoice.model.device).eval()
+            logger.info("Loaded RL-post-trained LLM weights for naturalness: %s", rl_llm)
+        else:
+            logger.info("use_rl_llm=true but %s not found; using base llm.pt", rl_llm)
     return TtsSession(
         cosyvoice=cosyvoice,
         sf=sf,

@@ -117,16 +117,26 @@ def load_eres2():
     sv_pipeline = pipeline(Tasks.speaker_verification,
                           model="iic/speech_eres2netv2w24s4ep4_sv_zh-cn_16k-common",
                           model_revision="v1.0.1")
+    _warned = {"done": False}
+
     def extract(audio, sr=16000):
         import scipy.signal as sps
         if sr != 16000:
             audio = sps.resample_poly(audio, 16000, sr)
         try:
             res = sv_pipeline.preprocess([audio.astype(np.float32)])
-            emb = sv_pipeline.forward(res)["embs"][0]
-            emb = np.asarray(emb).astype(np.float32)
+            out = sv_pipeline.forward(res)
+            # modelscope 1.20.0 은 Tensor 를 그대로 반환, 구버전은 {"embs": ...} dict.
+            if isinstance(out, dict):
+                out = out.get("embs", out)
+            arr = out.detach().cpu().numpy() if hasattr(out, "detach") else np.asarray(out)
+            arr = np.asarray(arr, dtype=np.float32)
+            emb = arr[0] if arr.ndim == 2 else arr
             return emb / max(np.linalg.norm(emb), 1e-9)
-        except Exception:
+        except Exception as exc:
+            if not _warned["done"]:
+                print(f"[load_eres2] ERes2NetV2 embedding failed (returns None): {exc}")
+                _warned["done"] = True
             return None
     return extract
 

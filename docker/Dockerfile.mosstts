@@ -1,0 +1,48 @@
+# MOSS-TTS-Local-Transformer 격리 이미지 — transformers 5.0 / torch 2.9+cu128 이라 기존 컨테이너(4.x/torch2.1~2.5)와
+# 충돌하므로 별도 컨테이너로 분리한다(NeMo 격리와 동일 패턴). 호스트 RTX 3080(sm_86, CUDA 12.8 드라이버).
+# 추론은 trust_remote_code(HF 호스팅 모델코드) 기반이라 레포 PYTHONPATH 불필요 — 의존성만 갖춘다.
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    git \
+    libsndfile1 \
+    sox \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3.12 -m venv /opt/venv \
+    && pip install --upgrade pip setuptools wheel
+
+# 1) torch cu128 스택 (CUDA 런타임/cudnn 휠 포함) — pyproject torch-runtime 그룹 핀
+RUN pip install --index-url https://download.pytorch.org/whl/cu128 \
+    torch==2.9.1+cu128 \
+    torchaudio==2.9.1+cu128
+
+# 2) transformers 5.0 + torchcodec + MOSS-TTS 코어 의존 (pyproject [project].dependencies 핀)
+RUN pip install \
+    transformers==5.0.0 \
+    torchcodec==0.8.1 \
+    safetensors==0.6.2 \
+    "numpy==2.1.0" \
+    librosa==0.11.0 \
+    tiktoken==0.12.0 \
+    einops==0.8.1 \
+    scipy==1.16.2 \
+    "soundfile>=0.12" \
+    orjson==3.11.4 \
+    tqdm==4.67.1 \
+    "PyYAML==6.0.3" \
+    huggingface_hub
+
+WORKDIR /workspace/project

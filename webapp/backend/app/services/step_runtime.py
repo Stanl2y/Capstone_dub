@@ -60,6 +60,7 @@ def build_step_runtime(config: dict[str, Any]) -> dict[StepName, StepRuntime]:
     translation_env = str(deep_get(config, ("translation", "env_file"), ".env") or ".env").strip()
     instruction_mode = str(deep_get(config, ("tts", "instruction", "mode"), "") or "").strip()
     instruction_env = str(deep_get(config, ("tts", "instruction", "env_file"), ".env") or ".env").strip()
+    fusion_mode = str(deep_get(config, ("emotion", "text_fusion", "mode"), "vectorengine_gpt") or "").strip()
     tts_engine = str(deep_get(config, ("tts", "engine"), "cosyvoice") or "cosyvoice").strip()
 
     asr_tool = _basename(models.get("asr")) or "asr"
@@ -84,10 +85,14 @@ def build_step_runtime(config: dict[str, Any]) -> dict[StepName, StepRuntime]:
         "redirect_nonspeech":        StepRuntime(service="separator", tool=vad_model),
         "diarize":                   StepRuntime(service="diarizer", tool=diarize_tool),
         "rttm_to_json":              StepRuntime(service="controller", tool=None),
-        "merge_chunks":              StepRuntime(service="controller", tool=None),
+        "merge_chunks":              StepRuntime(service="speaker", tool="f0-merge-gate"),
+        "visual_diarize":            StepRuntime(service="diarizer", tool="lightasd + face_remap"),
+        "reassign_speakers":         StepRuntime(service="diarizer", tool=_basename(deep_get(config, ("diarization", "reassign", "model"), "")) or "samresnet100"),
+        "remerge_chunks":            StepRuntime(service="speaker", tool="f0-merge-gate"),
         "cut_chunks":                StepRuntime(service="controller", tool="ffmpeg"),
         "extract_emotion":           StepRuntime(service="speaker", tool=emotion_tool),
         "run_asr":                   StepRuntime(service="speaker", tool=asr_tool),
+        "fuse_emotion_text":         StepRuntime(service="controller", tool=_llm_label(fusion_mode, translation_env) if fusion_mode and fusion_mode != "lexicon" else "lexicon"),
         "translate":                 StepRuntime(service="controller", tool=_llm_label(translation_mode, translation_env)),
         "build_timeline":            StepRuntime(service="controller", tool=None),
         "generate_tts_instructions": StepRuntime(service="controller", tool=_llm_label(instruction_mode, instruction_env) if instruction_mode else "instruction"),

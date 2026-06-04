@@ -45,6 +45,7 @@ def synthesize_dub_chunks(
     cap_risky_self_reference: bool = True,
     prompt_cap_max_sec: float = 4.5,
     style_priority: str = "instruction",
+    use_rl_llm: bool = True,
 ) -> list[dict[str, Any]]:
     rows = load_json(master_timeline_json)
     config = TtsRuntimeConfig.from_kwargs(
@@ -91,6 +92,7 @@ def synthesize_dub_chunks(
         normalized_reference_mode=config.normalized_reference_mode,
         min_prompt_sec=config.min_prompt_sec,
         output_target_path=output_target,
+        use_rl_llm=use_rl_llm,
     )
     logger.info(
         "Running CosyVoice TTS for %s rows | device=%s | mode=%s | reference_mode=%s | skip_existing=%s | min_prompt_sec=%.2f | fit_to_duration=%s",
@@ -139,6 +141,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-cap-risky-self-reference", action="store_true")
     parser.add_argument("--prompt-cap-max-sec", type=float, default=4.5)
     parser.add_argument("--style-priority", default="instruction", choices=["instruction", "balanced", "voice"])
+    parser.add_argument("--no-rl-llm", action="store_true", help="RL 후처리 LLM(llm.rl.pt) 대신 base llm.pt 사용")
     parser.add_argument("--output-json")
     return parser
 
@@ -173,6 +176,7 @@ def main() -> None:
         cap_risky_self_reference=not args.no_cap_risky_self_reference,
         prompt_cap_max_sec=args.prompt_cap_max_sec,
         style_priority=args.style_priority,
+        use_rl_llm=not args.no_rl_llm,
     )
 
 

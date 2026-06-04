@@ -123,6 +123,9 @@ def choose_reference_for_row(
                 "feature": compact_feature_summary(own_feature),
             }
         )
+        # self 가 수락되면 즉시 채택(자기 오디오 = 항상 올바른 화자 목소리, diarization 라벨 오류에 강건).
+        # 짧은 self 를 같은-라벨 bank 로 바꾸면 diarization 이 인물을 잘못 뭉쳤을 때 엉뚱한 목소리를 빌려와
+        # 청크별 목소리가 섞이므로(라벨 신뢰 가드 없이는 위험) self 우선을 유지한다.
         if own_assessment["accepted"]:
             return {
                 "prompt_audio": own_candidate["wav"],

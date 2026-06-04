@@ -41,6 +41,55 @@ services:
     ipc: host
     shm_size: "8gb"
 
+  # DiariZen 데몬(8913) — diarizer 이미지 + fastapi/uvicorn 얇은 층. fusion 의 1차 backend.
+  # 기동: docker compose exec -d diarizer-daemon python src/daemons/diarize_daemon.py --port 8913
+  diarizer-daemon:
+    <<: *service-defaults
+    image: movie-dubbing/diarizer-daemon:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.diarizer-daemon
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  # fusion 데몬(8918) — 순수 파이썬(GPU 불필요). nemo 이미지 재사용(fastapi/uvicorn/requests 포함).
+  # 기동: docker compose exec -d fusion python src/daemons/fusion_diarize_daemon.py --port 8918
+  fusion:
+    <<: *service-defaults
+    image: movie-dubbing/nemo:local
+    environment:
+      PYTHONPATH: /workspace/project/src
+      HF_HOME: /workspace/project/.hf-cache
+      FUSION_DIARIZEN_URL: http://diarizer-daemon:8913
+      FUSION_NEMO_URL: http://nemo:8923
+    depends_on:
+      - diarizer-daemon
+      - nemo
+
+  # NVIDIA Sortformer(end-to-end 화자분리) 격리 이미지 — NeMo 2.x. 화자분리 신형 모델 비교용.
+  sortformer:
+    <<: *service-defaults
+    image: movie-dubbing/sortformer:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sortformer
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
+  # NeMo TitaNet ClusteringDiarizer 격리 데몬 — fusion 보강용(transformers 충돌로 diarizer와 분리).
+  # 기동: docker compose exec -d nemo python src/daemons/nemo_diarize_daemon.py --port 8923
+  nemo:
+    <<: *service-defaults
+    image: movie-dubbing/nemo:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.nemo
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
+
   # pyannote.audio 4.0 community-1 전용 — diarizer의 pyannote 3.1.1과 격리. CPU(짧은 클립).
   pyannote:
     <<: *service-defaults
@@ -50,6 +99,18 @@ services:
       dockerfile: docker/Dockerfile.pyannote
     env_file:
       - .env
+
+  # MOSS-TTS-Local-Transformer 격리(transformers5/torch2.9+cu128) — CosyVoice 대체 후보 A/B 검증용.
+  # 기동 후: docker compose exec -T mosstts python src/run_tts_mosstts.py --text ... --reference ... --output ...
+  mosstts:
+    <<: *service-defaults
+    image: movie-dubbing/mosstts:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mosstts
+    gpus: all
+    ipc: host
+    shm_size: "8gb"
 
   speaker:
     <<: *service-defaults
@@ -116,6 +177,10 @@ services:
       - --port
       - "8000"
       - --reload
+      # src/(파이프라인 코드, 다른 컨테이너서 docker exec 로 실행)는 감시 제외 —
+      # src 편집이 백엔드를 재시작시켜 진행 중 redub(asyncio task + docker exec)을 죽이던 문제 방지
+      - --reload-dir
+      - webapp/backend
 
   # webapp 프론트엔드 — Vite dev server. /api,/static,/ws 는 webapp-backend 로 proxy.
   webapp-frontend:

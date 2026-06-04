@@ -7,6 +7,7 @@ import { api, type ConfigEntry, type InputFile, type RunOverrides } from "@/api/
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PillInput } from "@/components/ui/pill-input";
+import { toStaticUrl, fileName } from "@/lib/staticUrl";
 
 const COSYVOICE_LANGUAGES = [
   { label: "Korean", token: "<|ko|>", aliases: "ko korea 한국어 Korean" },
@@ -115,6 +116,7 @@ export function Upload() {
         </div>
 
         <aside className="space-y-6">
+          <VideoPreview path={selectedInput} />
           <ServicesHealth services={healthQuery.data?.services} />
           <Card className="sticky top-[80px] space-y-5 rounded-[2rem] p-5">
             <div>
@@ -134,6 +136,34 @@ export function Upload() {
         </aside>
       </div>
     </section>
+  );
+}
+
+// 선택한 입력 영상을 오른쪽에 미리보기(첫 프레임 섬네일 + 재생 가능)로 보여준다
+function VideoPreview({ path }: { path: string }) {
+  const url = toStaticUrl(path);
+  return (
+    <Card className="space-y-3 rounded-[2rem] p-5">
+      <div>
+        <p className="font-mono text-data-label uppercase text-data-label">Preview</p>
+        <h2 className="mt-1 font-display text-heading-sm text-primary">영상 미리보기</h2>
+      </div>
+      {url ? (
+        <video
+          key={url}
+          src={url}
+          controls
+          muted
+          preload="metadata"
+          className="aspect-video w-full rounded-[1.25rem] border border-border-hairline bg-black object-contain"
+        />
+      ) : (
+        <div className="flex aspect-video w-full items-center justify-center rounded-[1.25rem] border border-dashed border-border-hairline bg-surface-soft p-6 text-center text-body-sm text-mute">
+          영상을 선택하면 미리보기가 표시됩니다.
+        </div>
+      )}
+      <p className="truncate font-mono text-code-sm text-mute">{fileName(path)}</p>
+    </Card>
   );
 }
 

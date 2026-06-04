@@ -53,6 +53,8 @@ RUN python -m pip uninstall -y onnxruntime onnxruntime-gpu || true \
         yapf \
         scipy \
         scikit-learn \
+        speechbrain==1.0.2 \
+        hyperpyyaml \
         scenedetect \
         gdown \
         coloredlogs \

@@ -93,16 +93,16 @@ def compose_audio(
     total_samples = len(background_audio)
 
     for row in timeline:
+        dub_wav = row.get("dub_wav")
+        dub_path = resolve_project_path(dub_wav) if dub_wav else None
+        # wav 가 실제로 없을 때만 제외(비발화/합성 누락). dub_error 라도 wav 가 있으면 마지막 합성본을 쓴다.
+        if dub_path is None or not dub_path.exists():
+            logger.warning("Skipping chunk (no usable dub wav): %s | %s", row.get("chunk_id"), row.get("dub_error") or "missing")
+            continue
+        # dub_stale=True 여도 wav 가 있으면 포함 — stale 은 '재생성 권장' 신호일 뿐 합성 제외 신호가 아니다.
+        # (제외하면 그 대사가 최종에서 통째로 빠져 '일부 청크 미반영/누락'이 발생) — redub 은 run_tts 후 compose 하므로 정상 갱신본이 들어온다.
         if row.get("dub_stale"):
-            logger.warning("Dub row is stale, skipping: %s", row["chunk_id"])
-            continue
-        if row.get("dub_error"):
-            logger.warning("Dub row has error recorded, skipping: %s | %s", row["chunk_id"], row["dub_error"])
-            continue
-        dub_path = resolve_project_path(row["dub_wav"])
-        if not dub_path.exists():
-            logger.warning("Dub wav missing, skipping: %s", dub_path)
-            continue
+            logger.info("Including stale-but-present dub for %s", row.get("chunk_id"))
         audio, rate = _read_audio(dub_path, target_sample_rate=sample_rate, target_channels=channels)
         if rate != sample_rate:
             raise ValueError(f"Dub wav sample rate mismatch: {dub_path} -> {rate}")
@@ -117,7 +117,18 @@ def compose_audio(
     mix = np.zeros((total_samples, channels), dtype="float32")
     if len(background_audio):
         mix[: len(background_audio)] += background_audio[:total_samples]
-    for start_index, audio in prepared:
+    # 다음 청크 시작 순으로 정렬 후, 각 더빙이 다음 청크 시작을 넘지 않도록 캡 —
+    # 더빙이 슬롯보다 길어도 뒤쪽 무음 구간은 쓰되 다음 대사와 겹치지 않게 한다(겹쳐 들리는 문제 해결).
+    prepared.sort(key=lambda item: item[0])
+    fade_samples = max(1, int(round(0.025 * sample_rate)))  # 잘린 끝의 클릭 방지용 25ms 페이드아웃
+    for idx, (start_index, audio) in enumerate(prepared):
+        next_start = prepared[idx + 1][0] if idx + 1 < len(prepared) else total_samples
+        max_len = max(0, next_start - start_index)
+        if len(audio) > max_len:
+            audio = audio[:max_len].copy()
+            if len(audio) > fade_samples:
+                ramp = np.linspace(1.0, 0.0, fade_samples, dtype="float32").reshape(-1, 1)
+                audio[-fade_samples:] *= ramp
         end_index = min(total_samples, start_index + len(audio))
         if end_index > start_index:
             mix[start_index:end_index] += audio[: end_index - start_index]

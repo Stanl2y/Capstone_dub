@@ -12,6 +12,7 @@ from compose_audio import compose_audio
 from cut_chunks import cut_chunks
 from diarize import diarize_audio
 from extract_emotion import extract_chunk_emotions
+from fuse_emotion_text import fuse_emotion_with_text
 from extract_audio import extract_audio
 from generate_tts_instructions import generate_tts_instructions
 from merge_speaker_chunks import merge_speaker_chunks
@@ -23,6 +24,7 @@ from run_tts import synthesize_dub_chunks
 from separate_audio import separate_audio
 from translate_chunks import build_translation_entries
 from validate_tts_output import validate_tts_output
+from repair_diarization import repair_diarization_file
 
 logger = get_logger("pipeline")
 
@@ -62,6 +64,12 @@ def step_extract_audio(config: dict) -> None:
 
 def step_separate_audio(config: dict) -> None:
     raw_audio = require_value(config, ("paths", "raw_audio"))
+    # 재현성 — 분리된 vocals 가 이미 있으면 재사용한다(매 실행 demucs 가 미세하게 다른
+    # vocals 를 만들어 diarization 이 흔들리는 것을 방지). pipeline.cache_separation 로 on/off.
+    dialogue_audio = require_value(config, ("paths", "dialogue_audio"))
+    if bool(deep_get(config, ("pipeline", "cache_separation"), True)) and resolve_project_path(dialogue_audio).exists():
+        logger.info("Skipping separate_audio — 캐시된 vocals 재사용: %s", dialogue_audio)
+        return
     use_separator = bool(deep_get(config, ("pipeline", "use_separator"), False))
     if use_separator:
         source_sample_rate = int(deep_get(config, ("audio", "source_sample_rate"), 44100))
@@ -151,6 +159,19 @@ def step_diarize(config: dict) -> None:
             **diarization_kwargs,
         )
         return
+    if engine in {"fusion_4way", "preserved_fusion"}:
+        # 검증된 4-way fusion daemon (port 8903) 호출. test4/test5 sweep best 적용.
+        from preserved_fusion import diarize_with_4way_fusion
+
+        diarize_with_4way_fusion(
+            input_audio,
+            output_rttm,
+            num_speakers=deep_get(config, ("diarization", "num_speakers")),
+            min_duration=float(deep_get(config, ("diarization", "min_duration"), 0.3)),
+            fusion_url=deep_get(config, ("diarization", "fusion_url")),
+            timeout=int(deep_get(config, ("diarization", "fusion_timeout"), 600)),
+        )
+        return
     if engine != "diarizen":
         raise ValueError(f"Unsupported diarization.engine: {engine}")
     diarize_audio(input_audio, output_rttm, **diarization_kwargs)
@@ -191,7 +212,53 @@ def step_merge_chunks(config: dict) -> None:
         gap_threshold=float(deep_get(config, ("chunking", "speaker_merge_gap_sec"), 0.5)),
         min_chunk_sec=float(deep_get(config, ("chunking", "min_chunk_sec"), 0.0)),
         max_chunk_sec=float(deep_get(config, ("chunking", "max_chunk_sec"), 0.0)),
+        dialogue_audio=deep_get(config, ("paths", "dialogue_audio")),
+        f0_gate_hz=float(deep_get(config, ("chunking", "merge_f0_gate_hz"), 50.0)),
     )
+
+
+def step_visual_diarize(config: dict) -> None:
+    # 시각(LightASD+얼굴) 신호로 speaker_chunks 라벨을 교정한다. merge_chunks 와 cut_chunks
+    # 사이에서 speaker_chunks_json 을 in-place 교정해야 cut_chunks 가 교정된 라벨로 자른다.
+    # face_remap: do_reassign(라벨 교체) + do_split(얼굴별 분리) + do_intra_split(청크 내부 분할).
+    vd_cfg = deep_get(config, ("pipeline", "visual_diarize"), {}) or {}
+    if not bool(vd_cfg.get("enabled", False)):
+        logger.info("Skipping visual_diarize because pipeline.visual_diarize.enabled=false")
+        return
+    asd_tracks_json = deep_get(config, ("paths", "asd_tracks_json"))
+    if not asd_tracks_json:
+        logger.warning("visual_diarize: paths.asd_tracks_json 미설정 — 건너뜀")
+        return
+    asd_path = resolve_project_path(asd_tracks_json)
+    if not asd_path.exists():
+        if bool(vd_cfg.get("run_lightasd", False)):
+            logger.info("visual_diarize: asd_tracks 없음 — run_lightasd.py 실행")
+            run_command([
+                str(vd_cfg.get("python", "python")),
+                "scripts/visual/run_lightasd.py",
+                str(resolve_project_path(require_value(config, ("input_video",)))),
+                str(asd_path),
+                "--det-size", str(int(vd_cfg.get("det_size", 640))),
+            ])
+        else:
+            logger.warning("visual_diarize: asd_tracks 없음 & run_lightasd=false — 건너뜀")
+            return
+    speaker_chunks = require_value(config, ("paths", "speaker_chunks_json"))
+    params = {
+        "face_remap": {
+            "asd_tracks_json": str(asd_path),
+            "sim_threshold": float(vd_cfg.get("face_sim_threshold", 0.4)),
+            "min_speak_score": float(vd_cfg.get("min_speak_score", 0.5)),
+            "min_evidence": float(vd_cfg.get("min_evidence", 5.0)),
+            "dominant_ratio": float(vd_cfg.get("dominant_ratio", 0.5)),
+            "min_split_chunks": int(vd_cfg.get("min_split_chunks", 2)),
+            "do_split": bool(vd_cfg.get("do_split", True)),
+            "do_reassign": bool(vd_cfg.get("do_reassign", False)),
+            "do_intra_split": bool(vd_cfg.get("do_intra_split", False)),
+            "min_intra_sec": float(vd_cfg.get("min_intra_sec", 0.7)),
+        }
+    }
+    repair_diarization_file(speaker_chunks, speaker_chunks, modules=["face_remap"], params=params)
 
 
 def step_cut_chunks(config: dict) -> None:
@@ -202,13 +269,212 @@ def step_cut_chunks(config: dict) -> None:
     )
 
 
+def step_reassign_speakers(config: dict) -> None:
+    # 음성 임베딩으로 잘못 라벨된 청크를 올바른 화자로 되돌린다(분열된 화자 재병합 효과).
+    # 라벨만 바꾸고 경계는 유지한다. dialogue 오디오 시간슬라이스로 임베딩을 뽑으므로 cut_chunks 전,
+    # merge_chunks 직후에 둔다 — 통합된 라벨을 곧이어 remerge_chunks 가 한 청크로 병합해 더빙을 연결한다.
+    rcfg = deep_get(config, ("diarization", "reassign"), {}) or {}
+    if not bool(rcfg.get("enabled", False)):
+        logger.info("Skipping reassign_speakers because diarization.reassign.enabled=false")
+        return
+    speaker_chunks = str(require_value(config, ("paths", "speaker_chunks_json")))
+    emb_json = str(deep_get(config, ("paths", "chunk_embeddings_json"),
+                            "meta/{input_stem}/chunk_embeddings.json"))
+    model = str(rcfg.get("model", "models/embedding/wespeaker-voxblink2-samresnet100/speaker-embedding.onnx"))
+    device = "cuda" if str(deep_get(config, ("runtime", "device"), "cuda:0")).startswith("cuda") else "cpu"
+    dialogue_audio = str(require_value(config, ("paths", "dialogue_audio")))
+    # 1) dialogue 오디오에서 각 청크 [start,end] 구간을 잘라 화자 임베딩 추출 (wespeaker SAMResNet100, onnx)
+    run_command([
+        "python", "scripts/extract_chunk_embeddings.py",
+        "--chunks", speaker_chunks, "--output", emb_json,
+        "--model", model, "--device", device, "--audio", dialogue_audio,
+    ])
+    # 2) centroid 대비 cosine 재배정 (margin/min_sim 게이트)
+    repair_diarization_file(
+        speaker_chunks, speaker_chunks,
+        modules=["embed_reassign"],
+        params={"embed_reassign": {
+            "embeddings_json": emb_json,
+            "min_sim": float(rcfg.get("min_sim", 0.4)),
+            "margin": float(rcfg.get("margin", 0.07)),
+            "passes": int(rcfg.get("passes", 3)),
+        }},
+    )
+    # 3) 과분할 라벨 병합 — 한 인물이 여러 라벨로 쪼개진 오류 교정(embed_reassign 뒤, 추출 임베딩 재사용).
+    #    자기보정: 그 클립의 같은-화자 응집도(within_ref) 기준 within_ref - margin 이상 닮은 라벨쌍만 병합.
+    #    클립 무관 일반 적용 안전(검증: TEST 7->6 화자 0.1913->0.0752, 87a903ab/input/sample 등은 0병합 비파괴).
+    mcfg = rcfg.get("merge") if isinstance(rcfg.get("merge"), dict) else {}
+    if mcfg.get("enabled", True):
+        params_merge = {
+            "embeddings_json": emb_json,
+            "margin": float(mcfg.get("margin", 0.05)),
+            "min_threshold": float(mcfg.get("min_threshold", 0.6)),
+            "min_members": int(mcfg.get("min_members", 2)),
+        }
+        if mcfg.get("threshold") is not None:  # 절대 threshold 강제(옵션)
+            params_merge["merge_threshold"] = float(mcfg["threshold"])
+        repair_diarization_file(
+            speaker_chunks, speaker_chunks,
+            modules=["embed_merge"],
+            params={"embed_merge": params_merge},
+        )
+    # 3b) singleton 과분할 흡수 — embed_merge 가 건너뛴 1청크 라벨(min_members=2)을 음향+근접으로
+    #     기존 화자에 흡수한다. 짧은 과분할 조각(예 0.38s)만 합치고 진짜 짧은 별도화자(dur≥dur_high)는
+    #     게이트로 보호(검증: R4→R0·R2→R1 병합, 1.5~2.2s singleton 0건 오병합).
+    sa = rcfg.get("singleton_absorb") if isinstance(rcfg.get("singleton_absorb"), dict) else {}
+    if sa.get("enabled", False):
+        repair_diarization_file(
+            speaker_chunks, speaker_chunks,
+            modules=["singleton_absorb"],
+            params={"singleton_absorb": {
+                "embeddings_json": emb_json,
+                "dur_low": float(sa.get("dur_low", 0.6)),
+                "dur_high": float(sa.get("dur_high", 1.4)),
+                "tau_abs": float(sa.get("tau_abs", 0.50)),
+                "tau_strong": float(sa.get("tau_strong", 0.62)),
+                "margin": float(sa.get("margin", 0.06)),
+                "gap_sec": float(sa.get("gap_sec", 0.5)),
+                "proximity_floor": float(sa.get("proximity_floor", 0.30)),
+            }},
+        )
+    # 4) (opt-in, 기본 off) 짧은 클립 임베딩 재군집 — 청크 수 ≤ max_chunks 일 때만 base 라벨을
+    #    임베딩 군집으로 교체. 짧은 클립서 시간축 diarization 이 불안정해 임베딩 군집이 더 정확
+    #    (검증 V-measure: 1_original 0.25→0.54, sample 0.48→0.70). 긴 클립은 게이트로 보호(base 유지).
+    #    threshold(tau)·게이트(max_chunks)가 소수 클립 적합이라 기본 off — 더 많은 GT 검증 후 활성 권장.
+    rc = rcfg.get("recluster") if isinstance(rcfg.get("recluster"), dict) else {}
+    if rc.get("enabled", False):
+        repair_diarization_file(
+            speaker_chunks, speaker_chunks,
+            modules=["embed_recluster"],
+            params={"embed_recluster": {
+                "embeddings_json": emb_json,
+                "tau": float(rc.get("tau", 0.45)),
+                "max_chunks": int(rc.get("max_chunks", 18)),
+            }},
+        )
+    # 5) under-clustering 분할(마지막) — 두 화자가 한 라벨로 뭉친 오류를 임베딩 이중봉 + F0 차이로 분리.
+    #    recluster 뒤에 둬 그 결과를 덮어쓰지 않게 한다. F0 게이트(≥f0_split_hz)가 단일화자 이중봉
+    #    (감정/음높이 변동) 헛분할을 차단(검증: sample 리사 분리, 타 11편 헛분할 0). 진짜 다른 음역 화자만 분리.
+    sp = rcfg.get("split") if isinstance(rcfg.get("split"), dict) else {}
+    if sp.get("enabled", False):
+        repair_diarization_file(
+            speaker_chunks, speaker_chunks,
+            modules=["embed_split"],
+            params={"embed_split": {
+                "embeddings_json": emb_json,
+                "dialogue_audio": dialogue_audio,
+                "within_margin": float(sp.get("within_margin", 0.08)),
+                "min_sub": int(sp.get("min_sub", 2)),
+                "sil_min": float(sp.get("sil_min", 0.15)),
+                "min_label_chunks": int(sp.get("min_label_chunks", 4)),
+                "f0_split_hz": float(sp.get("f0_split_hz", 70.0)),
+            }},
+        )
+
+
+def step_remerge_chunks(config: dict) -> None:
+    # reassign_speakers 로 통합된 라벨을 바탕으로 인접 동일-화자 청크를 다시 병합하고 짧은 토막을 흡수해,
+    # 한 화자의 연속 발화가 한 청크가 되도록 한다(과분할로 끊긴 더빙 연결). 경계 재계산 후 cut_chunks 가 자른다.
+    if not bool(deep_get(config, ("chunking", "remerge_after_reassign"), True)):
+        logger.info("Skipping remerge_chunks because chunking.remerge_after_reassign=false")
+        return
+    speaker_chunks = require_value(config, ("paths", "speaker_chunks_json"))
+    # reassign 이 임베딩으로 화자 정체성을 이미 정했으므로 F0 재검증 없이 같은 라벨을 신뢰해 병합한다
+    # (F0 median 은 같은 화자의 음높이 변동을 다른 화자로 오인해 연속 발화를 못 합치므로 remerge 에선 기본 OFF).
+    merge_speaker_chunks(
+        speaker_chunks,
+        speaker_chunks,
+        gap_threshold=float(deep_get(config, ("chunking", "speaker_merge_gap_sec"), 0.5)),
+        min_chunk_sec=float(deep_get(config, ("chunking", "min_chunk_sec"), 0.0)),
+        max_chunk_sec=float(deep_get(config, ("chunking", "max_chunk_sec"), 0.0)),
+        dialogue_audio=deep_get(config, ("paths", "dialogue_audio")),
+        f0_gate_hz=float(deep_get(config, ("chunking", "remerge_f0_gate_hz"), 0.0)),
+        short_absorb_sec=float(deep_get(config, ("chunking", "short_absorb_sec"), 0.0)),
+    )
+
+
 def step_run_asr(config: dict) -> None:
+    # 검증된 boost subchunk 옵션 (test5: 141 → 156 words, +15 fresh, Adam x2 detect)
+    boost_cfg = deep_get(config, ("asr", "boost_subchunk")) or None
+    # ASR 언어 고정 — 미전달 시 청크별 언어 자동검출이 짧은 조각에서 타언어(일본어/중국어 등)로 새어
+    # 원문이 오염된다. asr.language(예: "English")를 모델에 강제 전달한다.
+    # 통짜 모드 — 전체 오디오 1회 전사 후 청크 시간에 분배(짧은 청크 단독 ASR 환각 방지).
+    fa_cfg = deep_get(config, ("asr", "full_audio")) or {}
+    full_audio = None
+    if bool(fa_cfg.get("enabled", False)):
+        audio = (
+            fa_cfg.get("audio")
+            or deep_get(config, ("audio", "chunk_source"))
+            or require_value(config, ("paths", "dialogue_audio"))
+        )
+        full_audio = {
+            "audio_path": audio,
+            "forced_aligner": fa_cfg.get("forced_aligner", "models/aligner/Qwen3-ForcedAligner-0.6B"),
+            "max_new_tokens": int(fa_cfg.get("max_new_tokens", 4096)),
+            "gap_recovery": fa_cfg.get("gap_recovery"),
+        }
     transcribe_chunks(
         require_value(config, ("paths", "speaker_chunks_json")),
         require_value(config, ("paths", "asr_json")),
         model_dir=require_value(config, ("models", "asr")),
         device=str(deep_get(config, ("runtime", "device"), "cuda:0")),
         dtype=str(deep_get(config, ("runtime", "dtype"), "float16")),
+        language=(deep_get(config, ("asr", "language")) or None),
+        boost_subchunk=boost_cfg,
+        full_audio=full_audio,
+    )
+
+
+def step_face_clustering(config: dict) -> None:
+    # 신규 face service 에서 LightASD + face cluster + SPK remap. config 로 on/off.
+    fc_cfg = deep_get(config, ("pipeline", "face_clustering"), {}) or {}
+    if not bool(fc_cfg.get("enabled", False)):
+        logger.info("Skipping face_clustering (pipeline.face_clustering.enabled=false)")
+        return
+    from face_clustering import cluster_faces_in_run
+
+    cluster_faces_in_run(
+        require_value(config, ("paths", "chunks_dir")),
+        deep_get(config, ("paths", "diarization_stabilized_json"))
+        or require_value(config, ("paths", "diarization_json")),
+        deep_get(config, ("paths", "face_clusters_json"),
+                 "meta/{input_stem}/face_clusters.json"),
+        deep_get(config, ("paths", "diarization_face_matched_json"),
+                 "meta/{input_stem}/diarization_face_matched.json"),
+        light_asd_dir=str(fc_cfg.get("light_asd_dir", "/opt/Light-ASD")),
+        venv_python=str(fc_cfg.get("venv_python", "/usr/bin/python")),
+        face_sim_threshold=float(fc_cfg.get("face_sim_threshold", 0.4)),
+        min_speak_score=float(fc_cfg.get("min_speak_score", 0.5)),
+        dominant_ratio=float(fc_cfg.get("dominant_ratio", 0.5)),
+        min_evidence_frames=int(fc_cfg.get("min_evidence_frames", 5)),
+    )
+
+
+def step_apply_preserved_repair(config: dict) -> None:
+    # E:\TTS_capstone 검증된 8 repair patches 일괄 호출.
+    # config.preserved_repair.run_dir = run 디렉토리 (meta/ + vocals/ 필요).
+    # config.preserved_repair.gap_fill = {main_merge, bg_merge, sim_match, pad}.
+    # config.preserved_repair.skip = ['word_level_split', ...] (optional).
+    repair_cfg = deep_get(config, ("preserved_repair",)) or {}
+    if not bool(repair_cfg.get("enabled", False)):
+        logger.info("Skipping preserved_repair (preserved_repair.enabled=false)")
+        return
+    run_dir = repair_cfg.get("run_dir")
+    if not run_dir:
+        logger.warning("preserved_repair.run_dir not set; skipping")
+        return
+    from apply_repair_patches import apply_all
+    gf = repair_cfg.get("gap_fill") or {}
+    apply_all(
+        str(resolve_project_path(run_dir)),
+        gap_fill_args={
+            "main_merge": float(gf.get("main_merge", 0.45)),
+            "bg_merge": float(gf.get("bg_merge", 0.30)),
+            "sim_match": float(gf.get("sim_match", 0.45)),
+            "pad": float(gf.get("pad", 0.5)),
+        },
+        skip=repair_cfg.get("skip") or [],
+        venv_python=repair_cfg.get("venv_python") or "/opt/venv_diarizen/bin/python",
     )
 
 
@@ -221,6 +487,23 @@ def step_extract_emotion(config: dict) -> None:
         device=str(deep_get(config, ("runtime", "device"), "cuda:0")),
         skip_existing=bool(deep_get(config, ("emotion", "skip_existing"), True)),
         funasr_output_dir=deep_get(config, ("emotion", "funasr_output_dir")),
+    )
+
+
+def step_fuse_emotion_text(config: dict) -> None:
+    cfg = deep_get(config, ("emotion", "text_fusion"), {}) or {}
+    if not bool(cfg.get("enabled", True)):
+        logger.info("Skipping fuse_emotion_text (emotion.text_fusion.enabled=false)")
+        return
+    fuse_emotion_with_text(
+        require_value(config, ("paths", "emotion_json")),
+        require_value(config, ("paths", "asr_json")),
+        mode=str(cfg.get("mode", "vectorengine_gpt")),
+        env_file=str(deep_get(config, ("translation", "env_file"), ".env")),
+        timeout_sec=int(cfg.get("timeout_sec", 30)),
+        batch_size=int(cfg.get("batch_size", 8)),
+        text_weight=float(cfg.get("text_weight", 0.7)),
+        skip_existing=bool(cfg.get("skip_existing", True)),
     )
 
 
@@ -237,6 +520,7 @@ def step_translate(config: dict) -> None:
         context_batch_size=int(deep_get(config, ("translation", "context_batch_size"), 12)),
         duration_control=bool(deep_get(config, ("translation", "duration_control"), True)),
         max_budget_rewrites=int(deep_get(config, ("translation", "max_budget_rewrites"), 2)),
+        register_plan=bool(deep_get(config, ("translation", "register_plan"), True)),
     )
 
 
@@ -298,6 +582,7 @@ def step_generate_tts_instructions(config: dict) -> None:
         skip_existing=bool(deep_get(config, ("tts", "instruction", "skip_existing"), True)),
         fallback_on_error=bool(deep_get(config, ("tts", "instruction", "fallback_on_error"), True)),
         batch_size=int(deep_get(config, ("tts", "instruction", "batch_size"), 6)),
+        target_language=str(deep_get(config, ("translation", "target_language"), "Korean")),
     )
 
 
@@ -337,6 +622,7 @@ def step_run_tts(config: dict) -> None:
         cap_risky_self_reference=bool(deep_get(config, ("tts", "cap_risky_self_reference"), True)),
         prompt_cap_max_sec=float(deep_get(config, ("tts", "prompt_cap_max_sec"), 4.5)),
         style_priority=str(deep_get(config, ("tts", "style_priority"), "instruction")),
+        use_rl_llm=bool(deep_get(config, ("tts", "use_rl_llm"), True)),
     )
 
 
@@ -411,10 +697,16 @@ STEP_FUNCTIONS: list[tuple[str, Callable[[dict], None]]] = [
     ("redirect_nonspeech", step_redirect_nonspeech),
     ("diarize", step_diarize),
     ("rttm_to_json", step_rttm_to_json),
+    ("face_clustering", step_face_clustering),
+    ("apply_preserved_repair", step_apply_preserved_repair),
     ("merge_chunks", step_merge_chunks),
+    ("visual_diarize", step_visual_diarize),
+    ("reassign_speakers", step_reassign_speakers),
+    ("remerge_chunks", step_remerge_chunks),
     ("cut_chunks", step_cut_chunks),
     ("extract_emotion", step_extract_emotion),
     ("run_asr", step_run_asr),
+    ("fuse_emotion_text", step_fuse_emotion_text),
     ("translate", step_translate),
     ("build_timeline", step_build_timeline),
     ("generate_tts_instructions", step_generate_tts_instructions),

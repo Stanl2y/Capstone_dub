@@ -40,6 +40,7 @@ download_model "emotion2vec/emotion2vec_plus_large" "models/emotion/emotion2vec-
 download_model "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" "models/tts/Fun-CosyVoice3-0.5B"
 download_model "BUT-FIT/diarizen-wavlm-large-s80-md-v2" "models/diarization/diarizen-wavlm-large-s80-md-v2"
 download_model "hbredin/wespeaker-voxceleb-resnet34-LM" "models/embedding/wespeaker-voxceleb-resnet34-LM"
+download_model "speechbrain/spkrec-ecapa-voxceleb" "models/embedding/spkrec-ecapa-voxceleb"
 
 download_separator_model() {
   local model_filename="$1"

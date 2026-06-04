@@ -12,10 +12,14 @@ STEP_SERVICE: dict[StepName, str] = {
     "redirect_nonspeech": "separator",  # silero-vad 가 separator 컨테이너에 설치되어 있음
     "diarize": "diarizer",
     "rttm_to_json": "controller",
-    "merge_chunks": "controller",
+    "merge_chunks": "speaker",  # F0 기반 병합 게이트가 librosa 필요 → speaker 컨테이너에서 실행
+    "visual_diarize": "diarizer",  # LightASD(run_lightasd)+얼굴 face_remap → insightface/Light-ASD 가 있는 diarizer 에서 실행
+    "reassign_speakers": "diarizer",  # samresnet onnx 임베딩 추출(GPU)+재배정 → diarizer 컨테이너
+    "remerge_chunks": "speaker",  # reassign 후 동일-화자 재병합 + 짧은토막 흡수(librosa F0) → speaker
     "cut_chunks": "controller",
     "extract_emotion": "speaker",
     "run_asr": "speaker",
+    "fuse_emotion_text": "controller",
     "translate": "controller",
     "build_timeline": "controller",
     "generate_tts_instructions": "controller",

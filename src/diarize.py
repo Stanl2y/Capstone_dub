@@ -143,12 +143,23 @@ def diarize_audio(
     apply_median_filtering: bool | None = None,
 ) -> Path:
     try:
+        import numpy as _np
         import torch
         from diarizen.pipelines.inference import DiariZenPipeline
     except ImportError as exc:
         raise RuntimeError(
             "diarizen is not installed in the active environment."
         ) from exc
+
+    # 재현성 고정 — 같은 입력/설정이면 같은 클러스터링이 나오도록 랜덤을 고정한다.
+    # (father 가 실행마다 1/2 라벨로 흔들리던 run-to-run 변동 억제.)
+    _seed = 1234
+    _np.random.seed(_seed)
+    torch.manual_seed(_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     audio_path = resolve_project_path(input_audio)
     model_path = resolve_project_path(model_dir)

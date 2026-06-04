@@ -52,3 +52,13 @@ stitch_modern_slick_interface/
 # 잘못 생성된 시스템 경로 (절대 추적 금지)
 C:/
 /C:/
+C/
+
+# 산출물/작업물/대용량 (코드 본체만 추적) — output/(단수) 오타 보완
+outputs/
+.panel-work/
+media/
+demo/
+demo.zip
+backup/
+판넬_VoxBridge_최종/

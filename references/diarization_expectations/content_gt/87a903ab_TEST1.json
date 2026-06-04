@@ -1,0 +1,27 @@
+{
+ "clip": "87a903ab_TEST1",
+ "chunk_to_character": {
+  "chunk_0001": "BG",
+  "chunk_0002": "OtherDoctor",
+  "chunk_0003": "BG",
+  "chunk_0004": "OtherDoctor",
+  "chunk_0005": "OtherDoctor",
+  "chunk_0006": "?Clothes",
+  "chunk_0007": "Mother",
+  "chunk_0008": "Clothes",
+  "chunk_0009": "OtherDoctor",
+  "chunk_0010": "Shaun",
+  "chunk_0011": "OtherDoctor",
+  "chunk_0012": "OtherDoctor",
+  "chunk_0013": "OtherDoctor",
+  "chunk_0014": "OtherDoctor",
+  "chunk_0015": "Shaun",
+  "chunk_0016": "Shaun",
+  "chunk_0017": "Shaun",
+  "chunk_0018": "BG",
+  "chunk_0019": "Shaun",
+  "chunk_0020": "Shaun",
+  "chunk_0021": "?Mother",
+  "chunk_0022": "Shaun"
+ }
+}

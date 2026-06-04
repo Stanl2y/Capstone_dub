@@ -1,0 +1,56 @@
+# NeMo TitaNet ClusteringDiarizer 격리 이미지 — fusion 보강용. diarizer(transformers 4.51.3)와
+# 의존성이 충돌하므로 별도 컨테이너로 분리한다. 우리 호스트(RTX 3080, CUDA 12.1)에 핀.
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base-nemo
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    git \
+    libsndfile1 \
+    pkg-config \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
+    sox \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# torch 는 diarizer 와 동일한 cu121 핀 (RTX 3080 = Ampere sm_86 지원).
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+RUN python -m pip install --index-url ${TORCH_INDEX_URL} --extra-index-url https://pypi.org/simple \
+    torch==2.1.1+cu121 torchaudio==2.1.1+cu121
+
+# NeMo 1.23.x = torch 2.0~2.2 / py3.10 지원 라인. [asr] extra 에 diarization(ClusteringDiarizer,
+# TitaNet, MarbleNet VAD, pyannote.metrics)이 포함된다. numpy 는 1.x 로 유지.
+# youtokentome 은 build-system.requires 에 Cython 을 선언하지 않아 격리 빌드에서 'No module named
+# Cython' 으로 실패한다 → Cython<3 선설치 후 --no-build-isolation 으로 먼저 빌드한다(표준 회피).
+# NeMo 1.23 은 huggingface_hub 을 캡하지 않아 최신 hf_hub(1.x)+datasets-latest 가 끌려오고,
+# 그게 pyarrow>=21 을 요구하다 pip 이 datasets 를 옛 버전으로 backtrack → pyarrow<4(py3.10 에서
+# 컴파일 불가한 고대 numpy 소스빌드)로 추락한다. NeMo 1.23 동시대 버전으로 4종을 선핀해 차단.
+RUN python -m pip install "numpy==1.26.4" "Cython<3.0" packaging setuptools wheel \
+    && python -m pip install \
+        "huggingface_hub==0.22.2" \
+        "transformers==4.40.2" \
+        "datasets==2.19.0" \
+        "pyarrow==15.0.2" \
+        "fsspec==2024.3.1" \
+    && python -m pip install --no-build-isolation youtokentome \
+    && python -m pip install "nemo_toolkit[asr]==1.23.0" \
+    && python -m pip install "transformers==4.40.2" "huggingface_hub==0.22.2" "tokenizers==0.19.1"
+
+# HTTP 데몬 런타임 (fusion 데몬을 이 이미지에서 함께 띄우므로 requests 포함).
+RUN python -m pip install "fastapi==0.111.0" "uvicorn==0.30.1" "pydantic==2.7.0" "PyYAML>=6.0" requests
+
+WORKDIR /workspace/project
+
+# TitaNet-L / MarbleNet VAD 모델은 최초 /diarize 호출 시 NGC/HF 에서 자동 다운로드되어
+# HF_HOME(/workspace/project/.hf-cache) 에 캐시된다.
+CMD ["sleep", "infinity"]

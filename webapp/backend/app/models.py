@@ -5,7 +5,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-# 16단계 파이프라인 step 이름 — src/pipeline.py:STEP_FUNCTIONS 와 동기 유지
+# 20단계 파이프라인 step 이름 — src/pipeline.py:STEP_FUNCTIONS 와 동기 유지
 PIPELINE_STEPS: tuple[str, ...] = (
     "extract_audio",
     "separate_audio",
@@ -13,9 +13,13 @@ PIPELINE_STEPS: tuple[str, ...] = (
     "diarize",
     "rttm_to_json",
     "merge_chunks",
+    "visual_diarize",
+    "reassign_speakers",
+    "remerge_chunks",
     "cut_chunks",
     "extract_emotion",
     "run_asr",
+    "fuse_emotion_text",
     "translate",
     "build_timeline",
     "generate_tts_instructions",
@@ -27,7 +31,8 @@ PIPELINE_STEPS: tuple[str, ...] = (
 
 StepName = Literal[
     "extract_audio", "separate_audio", "redirect_nonspeech", "diarize", "rttm_to_json", "merge_chunks",
-    "cut_chunks", "extract_emotion", "run_asr", "translate", "build_timeline",
+    "visual_diarize", "reassign_speakers", "remerge_chunks", "cut_chunks", "extract_emotion", "run_asr", "fuse_emotion_text",
+    "translate", "build_timeline",
     "generate_tts_instructions", "run_tts", "validate_tts", "compose_audio", "mux",
 ]
 StepState = Literal["pending", "running", "done", "failed", "skipped"]

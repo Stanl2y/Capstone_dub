@@ -80,6 +80,21 @@ def build_master_timeline(
         else {}
     )
     existing_timeline_rows = {row["chunk_id"]: row for row in load_json_if_exists(output_json, default=[])}
+    # 재diarize 로 chunk_id 가 바뀌어도 같은 대사면 수동/LLM instruct 를 보존하기 위한 text 내용 인덱스.
+    # 동일 text 가 둘 이상이면(애매) 오배정 방지 위해 제외한다.
+    _text_index: dict[tuple[str, str], dict[str, Any]] = {}
+    _dup_text: set[tuple[str, str]] = set()
+    for _r in existing_timeline_rows.values():
+        if not str(_r.get("tts_instruct_text", "") or "").strip():
+            continue
+        _key = (str(_r.get("text_src", "") or "").strip(), str(_r.get("text_translated", "") or "").strip())
+        if not _key[0] and not _key[1]:
+            continue
+        if _key in _text_index:
+            _dup_text.add(_key)
+        else:
+            _text_index[_key] = _r
+    existing_rows_by_text = {k: v for k, v in _text_index.items() if k not in _dup_text}
     chunk_overrides = _load_chunk_overrides(chunk_overrides_json, output_json)
 
     dub_root = resolve_project_path(dub_dir)
@@ -145,14 +160,17 @@ def build_master_timeline(
             existing_text_src == new_text_src
             and existing_text_translated == new_text_translated
         )
-        if text_carryover_safe:
+        # carryover 소스 결정: ① 같은 chunk_id + text 일치(기존 동작), ② chunk_id 가 바뀌었어도 같은 대사를 가진
+        # 다른 row(text 내용 매칭). 둘 다 없으면 폐기. text 매칭은 고유 text 만(중복은 제외돼 오배정 안 함).
+        carry_source = existing_row if text_carryover_safe else existing_rows_by_text.get((new_text_src, new_text_translated))
+        if carry_source:
             for key in (
                 "tts_instruct_text",
                 "tts_instruct_source",
                 "tts_instruct_emotion_label",
             ):
-                if key in existing_row:
-                    timeline_row[key] = existing_row[key]
+                if key in carry_source:
+                    timeline_row[key] = carry_source[key]
         elif existing_row:
             logger.info(
                 "Discarding stale tts_instruct_* for %s because text content changed since last build.",

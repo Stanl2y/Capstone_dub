@@ -19,7 +19,7 @@ FROM base-cpu AS controller
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 RUN python -m pip install --index-url ${TORCH_INDEX_URL} --extra-index-url https://pypi.org/simple torch torchvision torchaudio \
-    && python -m pip install numpy soundfile
+    && python -m pip install numpy soundfile silero-vad
 
 WORKDIR /workspace/project
 

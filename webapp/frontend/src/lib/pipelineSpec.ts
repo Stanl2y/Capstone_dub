@@ -1,4 +1,4 @@
-// 16단계 더빙 파이프라인의 화면 표시 메타데이터
+// 더빙 파이프라인 각 단계의 화면 표시 메타데이터 (src/pipeline.py 와 동기)
 import { PIPELINE_STEPS, type StepName } from "@/api/client";
 
 export interface StepMeta {
@@ -65,6 +65,30 @@ export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
     inputs: ["chunks.json"],
     outputs: ["merged.json"],
   },
+  visual_diarize: {
+    label: "Visual Diarize",
+    shortLabel: "visual_diarize",
+    description: "LightASD+얼굴(ArcFace) 신호로 화자 라벨을 교정합니다.",
+    service: "diarizer",
+    inputs: ["merged.json", "asd_tracks.json"],
+    outputs: ["merged.json"],
+  },
+  reassign_speakers: {
+    label: "Reassign Speakers",
+    shortLabel: "reassign_speakers",
+    description: "화자 임베딩으로 분열된 라벨을 한 화자로 통합합니다(과분할 교정).",
+    service: "diarizer",
+    inputs: ["merged.json", "dialogue.wav"],
+    outputs: ["merged.json", "chunk_embeddings.json"],
+  },
+  remerge_chunks: {
+    label: "Remerge Chunks",
+    shortLabel: "remerge_chunks",
+    description: "통합된 라벨로 인접 동일-화자 청크를 재병합하고 짧은 토막을 흡수해 더빙을 연결합니다.",
+    service: "speaker",
+    inputs: ["merged.json"],
+    outputs: ["merged.json"],
+  },
   cut_chunks: {
     label: "Cut Chunks",
     shortLabel: "cut_chunks",
@@ -88,6 +112,14 @@ export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
     service: "speaker",
     inputs: ["chunk_*.wav"],
     outputs: ["asr.json"],
+  },
+  fuse_emotion_text: {
+    label: "Fuse Emotion (Text)",
+    shortLabel: "fuse_emotion_text",
+    description: "대사·장면으로 청크별 감정을 재분류해 emotion.json을 교정합니다.",
+    service: "controller",
+    inputs: ["emotion.json", "asr.json"],
+    outputs: ["emotion.json"],
   },
   translate: {
     label: "Translate",
@@ -149,8 +181,8 @@ export const PIPELINE_STEP_META: Record<StepName, StepMeta> = {
 
 export const PIPELINE_PHASES: PipelinePhase[] = [
   { id: "audio", label: "Audio Prep", steps: ["extract_audio", "separate_audio", "redirect_nonspeech"] },
-  { id: "diarization", label: "Diarization & ASR", steps: ["diarize", "rttm_to_json", "merge_chunks", "cut_chunks", "extract_emotion"] },
-  { id: "text", label: "Text Processing", steps: ["run_asr", "translate", "build_timeline"] },
+  { id: "diarization", label: "Diarization & ASR", steps: ["diarize", "rttm_to_json", "merge_chunks", "visual_diarize", "reassign_speakers", "remerge_chunks", "cut_chunks", "extract_emotion"] },
+  { id: "text", label: "Text Processing", steps: ["run_asr", "fuse_emotion_text", "translate", "build_timeline"] },
   { id: "synthesis", label: "Synthesis", steps: ["generate_tts_instructions", "run_tts", "validate_tts", "compose_audio", "mux"] },
 ];
 
