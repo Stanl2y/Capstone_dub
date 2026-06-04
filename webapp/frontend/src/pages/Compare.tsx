@@ -14,6 +14,8 @@ export function Compare() {
   const run = runQuery.data;
   const inputUrl = toStaticUrl(run?.input_video);
   const outputUrl = toStaticUrl(run?.output_video);
+  // 최종 영상은 고정 URL이라 재mux 후에도 브라우저가 옛 영상을 캐시함 → mux 완료시각을 버전 쿼리로 붙여 강제 리프레시
+  const outputVersion = run?.steps?.find((s) => s.name === "mux")?.ended_at ?? 0;
   const ready = canCompareOutput(run);
   const player = useSyncedPlayback(ready);
   const activeAudioPath = player.audioMode === "original" ? run?.input_video : run?.output_video;
@@ -63,7 +65,7 @@ export function Compare() {
         </div>
       </div>
       <div className="flex min-h-0 flex-1 border-b border-border-hairline bg-[#111111]">
-        <VideoPane outputSrc={outputUrl} originalAudioSrc={inputUrl} player={player} activeFileName={fileName(activeAudioPath)} />
+        <VideoPane outputSrc={`${outputUrl}?v=${Math.round(outputVersion)}`} originalAudioSrc={inputUrl} player={player} activeFileName={fileName(activeAudioPath)} />
       </div>
       <footer className="border-t border-border-hairline bg-surface-container-lowest px-4 py-4 sm:px-8 sm:py-5">
         <div className="mb-4 flex items-center gap-4 font-mono text-code-sm text-secondary">
@@ -117,7 +119,7 @@ function CompareEmpty({ runId, title, body }: { runId: string; title: string; bo
 function VideoPane({ outputSrc, originalAudioSrc, player, activeFileName }: { outputSrc: string; originalAudioSrc: string | null; player: Player; activeFileName: string }) {
   return (
     <div className="relative flex h-full min-h-0 w-full items-center justify-center bg-[#111111]">
-      <video ref={player.videoRef} src={outputSrc} muted={player.audioMode === "original"} onLoadedMetadata={player.handleLoadedMetadata} onTimeUpdate={player.handleTimeUpdate} onEnded={player.handleEnded} className="h-full max-h-full w-full object-contain" playsInline preload="metadata" />
+      <video key={outputSrc} ref={player.videoRef} src={outputSrc} muted={player.audioMode === "original"} onLoadedMetadata={player.handleLoadedMetadata} onTimeUpdate={player.handleTimeUpdate} onEnded={player.handleEnded} className="h-full max-h-full w-full object-contain" playsInline preload="metadata" />
       <audio ref={player.originalAudioRef} src={originalAudioSrc ?? undefined} preload="auto" onLoadedMetadata={player.handleAudioLoadedMetadata} />
       <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 font-mono text-code-sm text-white"><span className="h-2 w-2 rounded-full bg-status-done" />{player.audioMode} audio</div>
       <div className="absolute right-5 top-5 rounded-full bg-black/60 px-4 py-2 text-body-sm-strong text-white/80">Final Output Preview</div>
